@@ -260,6 +260,7 @@ struct lua_State
 
     int cachedslot;    // when table operations or INDEX/NEWINDEX is invoked from Luau, what is the expected slot for lookup?
 
+	int identity = 2; /* The current luastate's identity (for lrbx's security stuff) */
 
     Table* gt;           // table of globals
     UpVal* openupval;    // list of open upvalues in this stack
