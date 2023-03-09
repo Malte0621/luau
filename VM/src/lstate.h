@@ -4,6 +4,7 @@
 
 #include "lobject.h"
 #include "ltm.h"
+#include <map>
 
 // registry
 #define registry(L) (&L->global->registry)
@@ -224,6 +225,23 @@ typedef struct global_State
 } global_State;
 // clang-format on
 
+
+// Task scheduler addon //
+struct taskSleepInfo
+{
+    double startTime;
+    double wakeUpTime;
+};
+
+struct taskSchedulerInfo
+{
+    long long lastThreadId = 0;
+    std::map<long long, lua_State*> sleepingThreads;
+    std::map<long long, lua_State*> sleepingThreadParentStates;
+    std::map<long long, taskSleepInfo*> sleepingThreadTimings;
+};
+
+
 /*
 ** `per thread' state
 */
@@ -261,6 +279,8 @@ struct lua_State
     int cachedslot;    // when table operations or INDEX/NEWINDEX is invoked from Luau, what is the expected slot for lookup?
 
 	int identity = 2; /* The current luastate's identity (for lrbx's security stuff) */
+    taskSchedulerInfo* taskScheduler; // task scheduler addon
+
 
     Table* gt;           // table of globals
     UpVal* openupval;    // list of open upvalues in this stack
