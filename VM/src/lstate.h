@@ -227,10 +227,17 @@ typedef struct global_State
 
 
 // Task scheduler addon //
+enum CallType {
+    Call = 0,
+    Resume = 1
+};
+
 struct taskSleepInfo
 {
     double startTime;
     double wakeUpTime;
+    CallType callType;
+    bool sendTimeTaken = true;
 };
 
 struct taskSchedulerInfo
