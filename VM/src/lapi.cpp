@@ -186,6 +186,7 @@ lua_State* lua_newthread(lua_State* L)
     global_State* g = L->global;
     if (g->cb.userthread)
         g->cb.userthread(L, L1);
+    L1->taskScheduler = L->taskScheduler; // Reference the task scheduler info.
     return L1;
 }
 
