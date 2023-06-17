@@ -53,10 +53,6 @@ TEST_CASE_FIXTURE(Fixture, "or_joins_types_with_no_superfluous_union")
 
 TEST_CASE_FIXTURE(Fixture, "and_does_not_always_add_boolean")
 {
-    ScopedFastFlag sff[]{
-        {"LuauTryhardAnd", true},
-    };
-
     CheckResult result = check(R"(
         local s = "a" and 10
         local x:boolean|number = s
@@ -670,9 +666,18 @@ TEST_CASE_FIXTURE(Fixture, "strict_binary_op_where_lhs_unknown")
     src += "end";
 
     CheckResult result = check(src);
-    LUAU_REQUIRE_ERROR_COUNT(ops.size(), result);
 
-    CHECK_EQ("Unknown type used in + operation; consider adding a type annotation to 'a'", toString(result.errors[0]));
+    if (FFlag::DebugLuauDeferredConstraintResolution)
+    {
+        LUAU_REQUIRE_ERROR_COUNT(ops.size(), result);
+        CHECK_EQ("Type family instance Add<a, b> depends on generic function parameters but does not appear in the function signature; this construct cannot be type-checked at this time", toString(result.errors[0]));
+        CHECK_EQ("Unknown type used in - operation; consider adding a type annotation to 'a'", toString(result.errors[1]));
+    }
+    else
+    {
+        LUAU_REQUIRE_ERROR_COUNT(ops.size(), result);
+        CHECK_EQ("Unknown type used in + operation; consider adding a type annotation to 'a'", toString(result.errors[0]));
+    }
 }
 
 TEST_CASE_FIXTURE(BuiltinsFixture, "and_binexps_dont_unify")
@@ -727,6 +732,8 @@ TEST_CASE_FIXTURE(Fixture, "error_on_invalid_operand_types_to_relational_operato
 
 TEST_CASE_FIXTURE(Fixture, "cli_38355_recursive_union")
 {
+    ScopedFastFlag sff{"LuauOccursIsntAlwaysFailure", true};
+
     CheckResult result = check(R"(
         --!strict
         local _
@@ -734,7 +741,7 @@ TEST_CASE_FIXTURE(Fixture, "cli_38355_recursive_union")
     )");
 
     LUAU_REQUIRE_ERROR_COUNT(1, result);
-    CHECK_EQ("Type contains a self-recursive construct that cannot be resolved", toString(result.errors[0]));
+    CHECK_EQ("Unknown type used in + operation; consider adding a type annotation to '_'", toString(result.errors[0]));
 }
 
 TEST_CASE_FIXTURE(BuiltinsFixture, "UnknownGlobalCompoundAssign")
@@ -850,8 +857,6 @@ TEST_CASE_FIXTURE(Fixture, "operator_eq_operands_are_not_subtypes_of_each_other_
 
 TEST_CASE_FIXTURE(Fixture, "operator_eq_completely_incompatible")
 {
-    ScopedFastFlag sff{"LuauIntersectionTestForEquality", true};
-
     CheckResult result = check(R"(
         local a: string | number = "hi"
         local b: {x: string}? = {x = "bye"}
@@ -883,8 +888,16 @@ TEST_CASE_FIXTURE(Fixture, "infer_any_in_all_modes_when_lhs_is_unknown")
         end
     )");
 
-    LUAU_REQUIRE_ERROR_COUNT(1, result);
-    CHECK_EQ(toString(result.errors[0]), "Unknown type used in + operation; consider adding a type annotation to 'x'");
+    if (FFlag::DebugLuauDeferredConstraintResolution)
+    {
+        LUAU_REQUIRE_NO_ERRORS(result);
+        CHECK(toString(requireType("f")) == "<a, b>(a, b) -> Add<a, b>");
+    }
+    else
+    {
+        LUAU_REQUIRE_ERROR_COUNT(1, result);
+        CHECK_EQ(toString(result.errors[0]), "Unknown type used in + operation; consider adding a type annotation to 'x'");
+    }
 
     result = check(Mode::Nonstrict, R"(
         local function f(x, y)
@@ -960,8 +973,6 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "expected_types_through_binary_or")
 
 TEST_CASE_FIXTURE(ClassFixture, "unrelated_classes_cannot_be_compared")
 {
-    ScopedFastFlag sff{"LuauIntersectionTestForEquality", true};
-
     CheckResult result = check(R"(
         local a = BaseClass.New()
         local b = UnrelatedClass.New()
@@ -974,38 +985,11 @@ TEST_CASE_FIXTURE(ClassFixture, "unrelated_classes_cannot_be_compared")
 
 TEST_CASE_FIXTURE(Fixture, "unrelated_primitives_cannot_be_compared")
 {
-    ScopedFastFlag sff{"LuauIntersectionTestForEquality", true};
-
     CheckResult result = check(R"(
         local c = 5 == true
     )");
 
     LUAU_REQUIRE_ERROR_COUNT(1, result);
-}
-
-TEST_CASE_FIXTURE(BuiltinsFixture, "mm_ops_must_return_a_value")
-{
-    if (!FFlag::DebugLuauDeferredConstraintResolution)
-        return;
-
-    CheckResult result = check(R"(
-        local mm = {
-            __add = function(self, other)
-                return
-            end,
-        }
-
-        local x = setmetatable({}, mm)
-        local y = x + 123
-    )");
-
-    LUAU_REQUIRE_ERROR_COUNT(2, result);
-
-    CHECK(requireType("y") == builtinTypes->errorRecoveryType());
-
-    const GenericError* ge = get<GenericError>(result.errors[1]);
-    REQUIRE(ge);
-    CHECK(ge->message == "Metamethod '__add' must return a value");
 }
 
 TEST_CASE_FIXTURE(BuiltinsFixture, "mm_comparisons_must_return_a_boolean")
@@ -1044,10 +1028,6 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "mm_comparisons_must_return_a_boolean")
 
 TEST_CASE_FIXTURE(BuiltinsFixture, "reworked_and")
 {
-    ScopedFastFlag sff[]{
-        {"LuauTryhardAnd", true},
-    };
-
     CheckResult result = check(R"(
 local a: number? = 5
 local b: boolean = (a or 1) > 10
@@ -1073,10 +1053,6 @@ local w = c and 1
 
 TEST_CASE_FIXTURE(BuiltinsFixture, "reworked_or")
 {
-    ScopedFastFlag sff[]{
-        {"LuauTryhardAnd", true},
-    };
-
     CheckResult result = check(R"(
 local a: number | false = 5
 local b: number? = 6
@@ -1107,6 +1083,159 @@ local f1 = f or 'f'
     }
     CHECK("string" == toString(requireType("e1")));
     CHECK("string" == toString(requireType("f1")));
+}
+
+TEST_CASE_FIXTURE(BuiltinsFixture, "reducing_and")
+{
+    CheckResult result = check(R"(
+type Foo = { name: string?, flag: boolean? }
+local arr: {Foo} = {}
+
+local function foo(arg: {name: string}?)
+    local name = if arg and arg.name then arg.name else nil
+
+    table.insert(arr, {
+        name = name or "",
+        flag = name ~= nil and name ~= "",
+    })
+end
+    )");
+
+    LUAU_REQUIRE_NO_ERRORS(result);
+}
+
+TEST_CASE_FIXTURE(BuiltinsFixture, "luau_polyfill_is_array_simplified")
+{
+    CheckResult result = check(R"(
+     --!strict
+     return function(value: any) : boolean
+        if typeof(value) ~= "number" then
+           return false
+        end
+        if value % 1 ~= 0 or value < 1 then
+           return false
+        end
+        return true
+     end
+    )");
+
+    LUAU_REQUIRE_NO_ERRORS(result);
+}
+
+TEST_CASE_FIXTURE(BuiltinsFixture, "luau_polyfill_is_array")
+{
+    CheckResult result = check(R"(
+--!strict
+return function(value: any): boolean
+    if typeof(value) ~= "table" then
+        return false
+    end
+    if next(value) == nil then
+        -- an empty table is an empty array
+        return true
+    end
+
+    local length = #value
+
+    if length == 0 then
+        return false
+    end
+
+    local count = 0
+    local sum = 0
+    for key in pairs(value) do
+        if typeof(key) ~= "number" then
+            return false
+        end
+        if key % 1 ~= 0 or key < 1 then
+            return false
+        end
+        count += 1
+        sum += key
+    end
+
+    return sum == (count * (count + 1) / 2)
+end
+    )");
+
+    LUAU_REQUIRE_NO_ERRORS(result);
+}
+
+TEST_CASE_FIXTURE(BuiltinsFixture, "luau-polyfill.String.slice")
+{
+
+    CheckResult result = check(R"(
+--!strict
+local function slice(str: string, startIndexStr: string | number, lastIndexStr: (string | number)?): string
+	local strLen, invalidBytePosition = utf8.len(str)
+	assert(strLen ~= nil, ("string `%s` has an invalid byte at position %s"):format(str, tostring(invalidBytePosition)))
+    local startIndex = tonumber(startIndexStr)
+
+
+	-- if no last index length set, go to str length + 1
+	local lastIndex = strLen + 1
+
+	assert(typeof(lastIndex) == "number", "lastIndexStr should convert to number")
+
+	if lastIndex > strLen then
+		lastIndex = strLen + 1
+	end
+
+	local startIndexByte = utf8.offset(str, startIndex)
+
+	return string.sub(str, startIndexByte, startIndexByte)
+end
+
+return slice
+
+
+    )");
+    LUAU_REQUIRE_NO_ERRORS(result);
+}
+
+TEST_CASE_FIXTURE(BuiltinsFixture, "luau-polyfill.Array.startswith")
+{
+    // This test also exercises whether the binary operator == passes the correct expected type
+    // to it's l,r operands
+    CheckResult result = check(R"(
+--!strict
+local function startsWith(value: string, substring: string, position: number?): boolean
+	-- Luau FIXME: we have to use a tmp variable, as Luau doesn't understand the logic below narrow position to `number`
+	local position_
+	if position == nil or position < 1 then
+		position_ = 1
+	else
+		position_ = position
+	end
+
+	return value:find(substring, position_, true) == position_
+end
+
+return startsWith
+
+    )");
+
+    LUAU_REQUIRE_NO_ERRORS(result);
+}
+
+TEST_CASE_FIXTURE(Fixture, "add_type_family_works")
+{
+    if (!FFlag::DebugLuauDeferredConstraintResolution)
+        return;
+
+    CheckResult result = check(R"(
+        local function add(x, y)
+            return x + y
+        end
+
+        local a = add(1, 2)
+        local b = add("foo", "bar")
+    )");
+
+    LUAU_REQUIRE_ERROR_COUNT(1, result);
+    CHECK(toString(requireType("a")) == "number");
+    CHECK(toString(requireType("b")) == "Add<string, string>");
+    CHECK(toString(result.errors[0]) == "Type family instance Add<string, string> is uninhabited");
 }
 
 TEST_SUITE_END();

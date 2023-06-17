@@ -85,8 +85,8 @@ struct ACFixtureImpl : BaseType
     {
         GlobalTypes& globals = this->frontend.globalsForAutocomplete;
         unfreeze(globals.globalTypes);
-        LoadDefinitionFileResult result =
-            loadDefinitionFile(this->frontend.typeChecker, globals, globals.globalScope, source, "@test", /* captureComments */ false);
+        LoadDefinitionFileResult result = this->frontend.loadDefinitionFile(
+            globals, globals.globalScope, source, "@test", /* captureComments */ false, /* typeCheckForAutocomplete */ true);
         freeze(globals.globalTypes);
 
         REQUIRE_MESSAGE(result.success, "loadDefinition: unable to load definition file");
@@ -2995,8 +2995,6 @@ TEST_CASE_FIXTURE(ACFixture, "autocomplete_string_singletons")
 
 TEST_CASE_FIXTURE(ACFixture, "string_singleton_as_table_key")
 {
-    ScopedFastFlag sff{"LuauCompleteTableKeysBetter", true};
-
     check(R"(
         type Direction = "up" | "down"
 
@@ -3390,38 +3388,6 @@ TEST_CASE_FIXTURE(ACFixture, "globals_are_order_independent")
     CHECK(ac.entryMap.count("abc1"));
 }
 
-TEST_CASE_FIXTURE(ACFixture, "type_reduction_is_hooked_up_to_autocomplete")
-{
-    ScopedFastFlag sff{"DebugLuauDeferredConstraintResolution", true};
-
-    check(R"(
-        type T = { x: (number & string)? }
-
-        function f(thingamabob: T)
-            thingamabob.@1
-        end
-
-        function g(thingamabob: T)
-            thingama@2
-        end
-    )");
-
-    ToStringOptions opts;
-    opts.exhaustive = true;
-
-    auto ac1 = autocomplete('1');
-    REQUIRE(ac1.entryMap.count("x"));
-    std::optional<TypeId> ty1 = ac1.entryMap.at("x").type;
-    REQUIRE(ty1);
-    CHECK("nil" == toString(*ty1, opts));
-
-    auto ac2 = autocomplete('2');
-    REQUIRE(ac2.entryMap.count("thingamabob"));
-    std::optional<TypeId> ty2 = ac2.entryMap.at("thingamabob").type;
-    REQUIRE(ty2);
-    CHECK("{| x: nil |}" == toString(*ty2, opts));
-}
-
 TEST_CASE_FIXTURE(ACFixture, "string_contents_is_available_to_callback")
 {
     loadDefinition(R"(
@@ -3450,8 +3416,6 @@ TEST_CASE_FIXTURE(ACFixture, "string_contents_is_available_to_callback")
 
 TEST_CASE_FIXTURE(ACFixture, "autocomplete_response_perf1" * doctest::timeout(0.5))
 {
-    ScopedFastFlag luauAutocompleteSkipNormalization{"LuauAutocompleteSkipNormalization", true};
-
     // Build a function type with a large overload set
     const int parts = 100;
     std::string source;
@@ -3475,6 +3439,54 @@ TEST_CASE_FIXTURE(ACFixture, "autocomplete_response_perf1" * doctest::timeout(0.
 
     CHECK(ac.entryMap.count("true"));
     CHECK(ac.entryMap.count("Instance"));
+}
+
+TEST_CASE_FIXTURE(ACFixture, "strict_mode_force")
+{
+    check(R"(
+--!nonstrict
+local a: {x: number} = {x=1}
+local b = a
+local c = b.@1
+    )");
+
+    auto ac = autocomplete('1');
+
+    CHECK_EQ(1, ac.entryMap.size());
+    CHECK(ac.entryMap.count("x"));
+}
+
+TEST_CASE_FIXTURE(ACFixture, "suggest_exported_types")
+{
+    check(R"(
+export type Type = {a: number}
+local a: T@1
+    )");
+
+    auto ac = autocomplete('1');
+
+    CHECK(ac.entryMap.count("Type"));
+    CHECK_EQ(ac.context, AutocompleteContext::Type);
+}
+
+TEST_CASE_FIXTURE(ACFixture, "frontend_use_correct_global_scope")
+{
+    loadDefinition(R"(
+        declare class Instance
+            Name: string
+        end
+    )");
+
+    CheckResult result = check(R"(
+        local a: unknown = nil
+        if typeof(a) == "Instance" then
+            local b = a.@1
+        end
+    )");
+    auto ac = autocomplete('1');
+
+    CHECK_EQ(1, ac.entryMap.size());
+    CHECK(ac.entryMap.count("Name"));
 }
 
 TEST_SUITE_END();

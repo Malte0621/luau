@@ -13,7 +13,7 @@ bool Instantiation::isDirty(TypeId ty)
 {
     if (const FunctionType* ftv = log->getMutable<FunctionType>(ty))
     {
-        if (ftv->hasNoGenerics)
+        if (ftv->hasNoFreeOrGenericTypes)
             return false;
 
         return true;
@@ -74,7 +74,7 @@ bool ReplaceGenerics::ignoreChildren(TypeId ty)
 {
     if (const FunctionType* ftv = log->getMutable<FunctionType>(ty))
     {
-        if (ftv->hasNoGenerics)
+        if (ftv->hasNoFreeOrGenericTypes)
             return true;
 
         // We aren't recursing in the case of a generic function which
@@ -127,7 +127,7 @@ TypeId ReplaceGenerics::clean(TypeId ty)
 TypePackId ReplaceGenerics::clean(TypePackId tp)
 {
     LUAU_ASSERT(isDirty(tp));
-    return addTypePack(TypePackVar(FreeTypePack{level}));
+    return addTypePack(TypePackVar(FreeTypePack{scope, level}));
 }
 
 } // namespace Luau

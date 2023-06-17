@@ -40,7 +40,7 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "dcr_require_basic")
     CheckResult bResult = frontend.check("game/B");
     LUAU_REQUIRE_NO_ERRORS(bResult);
 
-    ModulePtr b = frontend.moduleResolver.modules["game/B"];
+    ModulePtr b = frontend.moduleResolver.getModule("game/B");
     REQUIRE(b != nullptr);
     std::optional<TypeId> bType = requireType(b, "b");
     REQUIRE(bType);
@@ -72,7 +72,7 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "require")
     dumpErrors(bResult);
     LUAU_REQUIRE_NO_ERRORS(bResult);
 
-    ModulePtr b = frontend.moduleResolver.modules["game/B"];
+    ModulePtr b = frontend.moduleResolver.getModule("game/B");
 
     REQUIRE(b != nullptr);
 
@@ -102,7 +102,7 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "require_types")
     CheckResult bResult = frontend.check("workspace/B");
     LUAU_REQUIRE_NO_ERRORS(bResult);
 
-    ModulePtr b = frontend.moduleResolver.modules["workspace/B"];
+    ModulePtr b = frontend.moduleResolver.getModule("workspace/B");
     REQUIRE(b != nullptr);
 
     TypeId hType = requireType(b, "h");
@@ -167,8 +167,8 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "require_module_that_does_not_export")
     frontend.check("game/Workspace/A");
     frontend.check("game/Workspace/B");
 
-    ModulePtr aModule = frontend.moduleResolver.modules["game/Workspace/A"];
-    ModulePtr bModule = frontend.moduleResolver.modules["game/Workspace/B"];
+    ModulePtr aModule = frontend.moduleResolver.getModule("game/Workspace/A");
+    ModulePtr bModule = frontend.moduleResolver.getModule("game/Workspace/B");
 
     CHECK(aModule->errors.empty());
     REQUIRE_EQ(1, bModule->errors.size());
@@ -485,6 +485,8 @@ return unpack(l0[_])
 
 TEST_CASE_FIXTURE(BuiltinsFixture, "check_imported_module_names")
 {
+    ScopedFastFlag sff{"LuauTinyControlFlowAnalysis", true};
+
     fileResolver.source["game/A"] = R"(
 return function(...) end
     )";
@@ -506,19 +508,10 @@ return l0
 
     ModulePtr mod = getMainModule();
     REQUIRE(mod);
-    if (FFlag::DebugLuauDeferredConstraintResolution)
-    {
-        REQUIRE(mod->scopes.size() >= 4);
-        CHECK(mod->scopes[0].second->importedModules["l0"] == "game/B");
-        CHECK(mod->scopes[3].second->importedModules["l1"] == "game/A");
-    }
-    else
-    {
 
-        REQUIRE(mod->scopes.size() >= 3);
-        CHECK(mod->scopes[0].second->importedModules["l0"] == "game/B");
-        CHECK(mod->scopes[2].second->importedModules["l1"] == "game/A");
-    }
+    REQUIRE(mod->scopes.size() == 4);
+    CHECK(mod->scopes[0].second->importedModules["l0"] == "game/B");
+    CHECK(mod->scopes[3].second->importedModules["l1"] == "game/A");
 }
 
 TEST_SUITE_END();

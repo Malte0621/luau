@@ -330,7 +330,7 @@ TEST_CASE_FIXTURE(Fixture, "self_referential_type_alias")
     std::optional<Property> incr = get(oTable->props, "incr");
     REQUIRE(incr);
 
-    const FunctionType* incrFunc = get<FunctionType>(incr->type);
+    const FunctionType* incrFunc = get<FunctionType>(incr->type());
     REQUIRE(incrFunc);
 
     std::optional<TypeId> firstArg = first(incrFunc->argTypes);
@@ -435,6 +435,10 @@ TEST_CASE_FIXTURE(Fixture, "typeof_expr")
 
 TEST_CASE_FIXTURE(Fixture, "corecursive_types_error_on_tight_loop")
 {
+    ScopedFastFlag flags[] = {
+        {"LuauOccursIsntAlwaysFailure", true},
+    };
+
     CheckResult result = check(R"(
         type A = B
         type B = A
@@ -443,10 +447,10 @@ TEST_CASE_FIXTURE(Fixture, "corecursive_types_error_on_tight_loop")
         local bb:B
     )");
 
-    TypeId fType = requireType("aa");
-    const AnyType* ftv = get<AnyType>(follow(fType));
-    REQUIRE(ftv != nullptr);
-    REQUIRE(!result.errors.empty());
+    LUAU_REQUIRE_ERROR_COUNT(1, result);
+
+    OccursCheckFailed* ocf = get<OccursCheckFailed>(result.errors[0]);
+    REQUIRE(ocf);
 }
 
 TEST_CASE_FIXTURE(Fixture, "type_alias_always_resolve_to_a_real_type")
@@ -489,7 +493,7 @@ TEST_CASE_FIXTURE(Fixture, "interface_types_belong_to_interface_arena")
     TableType* exportsTable = getMutable<TableType>(*exportsType);
     REQUIRE(exportsTable != nullptr);
 
-    TypeId n = exportsTable->props["n"].type;
+    TypeId n = exportsTable->props["n"].type();
     REQUIRE(n != nullptr);
 
     CHECK(isInArena(n, mod.interfaceTypes));
@@ -544,10 +548,10 @@ TEST_CASE_FIXTURE(Fixture, "cloned_interface_maintains_pointers_between_definiti
     TableType* exportsTable = getMutable<TableType>(*exportsType);
     REQUIRE(exportsTable != nullptr);
 
-    TypeId aType = exportsTable->props["a"].type;
+    TypeId aType = exportsTable->props["a"].type();
     REQUIRE(aType);
 
-    TypeId bType = exportsTable->props["b"].type;
+    TypeId bType = exportsTable->props["b"].type();
     REQUIRE(bType);
 
     CHECK(isInArena(recordType, mod.interfaceTypes));
@@ -732,6 +736,18 @@ TEST_CASE_FIXTURE(Fixture, "luau_print_is_not_special_without_the_flag")
     LUAU_REQUIRE_ERROR_COUNT(1, result);
 }
 
+TEST_CASE_FIXTURE(Fixture, "luau_print_incomplete")
+{
+    ScopedFastFlag sffs{"DebugLuauMagicTypes", true};
+
+    CheckResult result = check(R"(
+        local a: _luau_print
+    )");
+
+    LUAU_REQUIRE_ERROR_COUNT(1, result);
+    CHECK_EQ("_luau_print requires one generic parameter", toString(result.errors[0]));
+}
+
 TEST_CASE_FIXTURE(Fixture, "instantiate_type_fun_should_not_trip_rbxassert")
 {
     CheckResult result = check(R"(
@@ -762,6 +778,7 @@ TEST_CASE_FIXTURE(Fixture, "occurs_check_on_cyclic_union_type")
 {
     CheckResult result = check(R"(
         type T = T | T
+        local x : T
     )");
 
     LUAU_REQUIRE_ERROR_COUNT(1, result);

@@ -2,14 +2,16 @@
 #pragma once
 
 #include "Luau/Anyification.h"
-#include "Luau/Predicate.h"
+#include "Luau/ControlFlow.h"
 #include "Luau/Error.h"
 #include "Luau/Module.h"
-#include "Luau/Symbol.h"
+#include "Luau/Predicate.h"
 #include "Luau/Substitution.h"
+#include "Luau/Symbol.h"
 #include "Luau/TxnLog.h"
-#include "Luau/TypePack.h"
 #include "Luau/Type.h"
+#include "Luau/TypePack.h"
+#include "Luau/TypeUtils.h"
 #include "Luau/Unifier.h"
 #include "Luau/UnifierSharedState.h"
 
@@ -28,7 +30,14 @@ struct ModuleResolver;
 
 using Name = std::string;
 using ScopePtr = std::shared_ptr<Scope>;
-using OverloadErrorEntry = std::tuple<std::vector<TypeError>, std::vector<TypeId>, const FunctionType*>;
+
+struct OverloadErrorEntry
+{
+    TxnLog log;
+    ErrorVec errors;
+    std::vector<TypeId> arguments;
+    const FunctionType* fnTy;
+};
 
 bool doesCallError(const AstExprCall* call);
 bool hasBreak(AstStat* node);
@@ -57,12 +66,6 @@ public:
     }
 };
 
-enum class ValueContext
-{
-    LValue,
-    RValue
-};
-
 struct GlobalTypes
 {
     GlobalTypes(NotNull<BuiltinTypes> builtinTypes);
@@ -78,7 +81,8 @@ struct GlobalTypes
 // within a program are borrowed pointers into this set.
 struct TypeChecker
 {
-    explicit TypeChecker(const GlobalTypes& globals, ModuleResolver* resolver, NotNull<BuiltinTypes> builtinTypes, InternalErrorReporter* iceHandler);
+    explicit TypeChecker(
+        const ScopePtr& globalScope, ModuleResolver* resolver, NotNull<BuiltinTypes> builtinTypes, InternalErrorReporter* iceHandler);
     TypeChecker(const TypeChecker&) = delete;
     TypeChecker& operator=(const TypeChecker&) = delete;
 
@@ -87,28 +91,28 @@ struct TypeChecker
 
     std::vector<std::pair<Location, ScopePtr>> getScopes() const;
 
-    void check(const ScopePtr& scope, const AstStat& statement);
-    void check(const ScopePtr& scope, const AstStatBlock& statement);
-    void check(const ScopePtr& scope, const AstStatIf& statement);
-    void check(const ScopePtr& scope, const AstStatWhile& statement);
-    void check(const ScopePtr& scope, const AstStatRepeat& statement);
-    void check(const ScopePtr& scope, const AstStatReturn& return_);
-    void check(const ScopePtr& scope, const AstStatAssign& assign);
-    void check(const ScopePtr& scope, const AstStatCompoundAssign& assign);
-    void check(const ScopePtr& scope, const AstStatLocal& local);
-    void check(const ScopePtr& scope, const AstStatFor& local);
-    void check(const ScopePtr& scope, const AstStatForIn& forin);
-    void check(const ScopePtr& scope, TypeId ty, const ScopePtr& funScope, const AstStatFunction& function);
-    void check(const ScopePtr& scope, TypeId ty, const ScopePtr& funScope, const AstStatLocalFunction& function);
-    void check(const ScopePtr& scope, const AstStatTypeAlias& typealias);
-    void check(const ScopePtr& scope, const AstStatDeclareClass& declaredClass);
-    void check(const ScopePtr& scope, const AstStatDeclareFunction& declaredFunction);
+    ControlFlow check(const ScopePtr& scope, const AstStat& statement);
+    ControlFlow check(const ScopePtr& scope, const AstStatBlock& statement);
+    ControlFlow check(const ScopePtr& scope, const AstStatIf& statement);
+    ControlFlow check(const ScopePtr& scope, const AstStatWhile& statement);
+    ControlFlow check(const ScopePtr& scope, const AstStatRepeat& statement);
+    ControlFlow check(const ScopePtr& scope, const AstStatReturn& return_);
+    ControlFlow check(const ScopePtr& scope, const AstStatAssign& assign);
+    ControlFlow check(const ScopePtr& scope, const AstStatCompoundAssign& assign);
+    ControlFlow check(const ScopePtr& scope, const AstStatLocal& local);
+    ControlFlow check(const ScopePtr& scope, const AstStatFor& local);
+    ControlFlow check(const ScopePtr& scope, const AstStatForIn& forin);
+    ControlFlow check(const ScopePtr& scope, TypeId ty, const ScopePtr& funScope, const AstStatFunction& function);
+    ControlFlow check(const ScopePtr& scope, TypeId ty, const ScopePtr& funScope, const AstStatLocalFunction& function);
+    ControlFlow check(const ScopePtr& scope, const AstStatTypeAlias& typealias);
+    ControlFlow check(const ScopePtr& scope, const AstStatDeclareClass& declaredClass);
+    ControlFlow check(const ScopePtr& scope, const AstStatDeclareFunction& declaredFunction);
 
     void prototype(const ScopePtr& scope, const AstStatTypeAlias& typealias, int subLevel = 0);
     void prototype(const ScopePtr& scope, const AstStatDeclareClass& declaredClass);
 
-    void checkBlock(const ScopePtr& scope, const AstStatBlock& statement);
-    void checkBlockWithoutRecursionCheck(const ScopePtr& scope, const AstStatBlock& statement);
+    ControlFlow checkBlock(const ScopePtr& scope, const AstStatBlock& statement);
+    ControlFlow checkBlockWithoutRecursionCheck(const ScopePtr& scope, const AstStatBlock& statement);
     void checkBlockTypeAliases(const ScopePtr& scope, std::vector<AstStat*>& sorted);
 
     WithPredicate<TypeId> checkExpr(
@@ -169,7 +173,7 @@ struct TypeChecker
         const std::vector<OverloadErrorEntry>& errors);
     void reportOverloadResolutionError(const ScopePtr& scope, const AstExprCall& expr, TypePackId retPack, TypePackId argPack,
         const std::vector<Location>& argLocations, const std::vector<TypeId>& overloads, const std::vector<TypeId>& overloadsThatMatchArgCount,
-        const std::vector<OverloadErrorEntry>& errors);
+        std::vector<OverloadErrorEntry>& errors);
 
     WithPredicate<TypePackId> checkExprList(const ScopePtr& scope, const Location& location, const AstArray<AstExpr*>& exprs,
         bool substituteFreeForNil = false, const std::vector<bool>& lhsAnnotations = {},
@@ -366,12 +370,10 @@ public:
      */
     std::vector<TypeId> unTypePack(const ScopePtr& scope, TypePackId pack, size_t expectedLength, const Location& location);
 
-    // TODO: only const version of global scope should be available to make sure nothing else is modified inside of from users of TypeChecker
-    const GlobalTypes& globals;
+    const ScopePtr& globalScope;
 
     ModuleResolver* resolver;
     ModulePtr currentModule;
-    ModuleName currentModuleName;
 
     std::function<void(const ModuleName&, const ScopePtr&)> prepareModuleScope;
     NotNull<BuiltinTypes> builtinTypes;

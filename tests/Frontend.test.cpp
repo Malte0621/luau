@@ -152,7 +152,7 @@ TEST_CASE_FIXTURE(FrontendFixture, "automatically_check_dependent_scripts")
 
     frontend.check("game/Gui/Modules/B");
 
-    ModulePtr bModule = frontend.moduleResolver.modules["game/Gui/Modules/B"];
+    ModulePtr bModule = frontend.moduleResolver.getModule("game/Gui/Modules/B");
     REQUIRE(bModule != nullptr);
     CHECK(bModule->errors.empty());
     Luau::dumpErrors(bModule);
@@ -240,13 +240,13 @@ TEST_CASE_FIXTURE(FrontendFixture, "nocheck_modules_are_typed")
     CheckResult result = frontend.check("game/Gui/Modules/C");
     LUAU_REQUIRE_NO_ERRORS(result);
 
-    ModulePtr aModule = frontend.moduleResolver.modules["game/Gui/Modules/A"];
+    ModulePtr aModule = frontend.moduleResolver.getModule("game/Gui/Modules/A");
     REQUIRE(bool(aModule));
 
     std::optional<TypeId> aExports = first(aModule->returnType);
     REQUIRE(bool(aExports));
 
-    ModulePtr bModule = frontend.moduleResolver.modules["game/Gui/Modules/B"];
+    ModulePtr bModule = frontend.moduleResolver.getModule("game/Gui/Modules/B");
     REQUIRE(bool(bModule));
 
     std::optional<TypeId> bExports = first(bModule->returnType);
@@ -297,7 +297,7 @@ TEST_CASE_FIXTURE(FrontendFixture, "nocheck_cycle_used_by_checked")
     CheckResult result = frontend.check("game/Gui/Modules/C");
     LUAU_REQUIRE_NO_ERRORS(result);
 
-    ModulePtr cModule = frontend.moduleResolver.modules["game/Gui/Modules/C"];
+    ModulePtr cModule = frontend.moduleResolver.getModule("game/Gui/Modules/C");
     REQUIRE(bool(cModule));
 
     std::optional<TypeId> cExports = first(cModule->returnType);
@@ -456,16 +456,16 @@ TEST_CASE_FIXTURE(FrontendFixture, "dont_reparse_clean_file_when_linting")
         end
     )";
 
-    frontend.check("Modules/A");
+    configResolver.defaultConfig.enabledLint.enableWarning(LintWarning::Code_ForRange);
+
+    lintModule("Modules/A");
 
     fileResolver.source["Modules/A"] = R"(
         -- We have fixed the lint error, but we did not tell the Frontend that the file is changed!
-        -- Therefore, we expect Frontend to reuse the parse tree.
+        -- Therefore, we expect Frontend to reuse the results from previous lint.
     )";
 
-    configResolver.defaultConfig.enabledLint.enableWarning(LintWarning::Code_ForRange);
-
-    LintResult lintResult = frontend.lint("Modules/A");
+    LintResult lintResult = lintModule("Modules/A");
 
     CHECK_EQ(1, lintResult.warnings.size());
 }
@@ -486,7 +486,7 @@ TEST_CASE_FIXTURE(FrontendFixture, "dont_recheck_script_that_hasnt_been_marked_d
 
     frontend.check("game/Gui/Modules/B");
 
-    ModulePtr bModule = frontend.moduleResolver.modules["game/Gui/Modules/B"];
+    ModulePtr bModule = frontend.moduleResolver.getModule("game/Gui/Modules/B");
     CHECK(bModule->errors.empty());
     Luau::dumpErrors(bModule);
 }
@@ -507,7 +507,7 @@ TEST_CASE_FIXTURE(FrontendFixture, "recheck_if_dependent_script_is_dirty")
 
     frontend.check("game/Gui/Modules/B");
 
-    ModulePtr bModule = frontend.moduleResolver.modules["game/Gui/Modules/B"];
+    ModulePtr bModule = frontend.moduleResolver.getModule("game/Gui/Modules/B");
     CHECK(bModule->errors.empty());
     Luau::dumpErrors(bModule);
 
@@ -760,23 +760,47 @@ TEST_CASE_FIXTURE(FrontendFixture, "test_lint_uses_correct_config")
 
     configResolver.configFiles["Module/A"].enabledLint.enableWarning(LintWarning::Code_ForRange);
 
-    auto result = frontend.lint("Module/A");
+    auto result = lintModule("Module/A");
     CHECK_EQ(1, result.warnings.size());
 
     configResolver.configFiles["Module/A"].enabledLint.disableWarning(LintWarning::Code_ForRange);
+    frontend.markDirty("Module/A");
 
-    auto result2 = frontend.lint("Module/A");
+    auto result2 = lintModule("Module/A");
     CHECK_EQ(0, result2.warnings.size());
 
     LintOptions overrideOptions;
 
     overrideOptions.enableWarning(LintWarning::Code_ForRange);
-    auto result3 = frontend.lint("Module/A", overrideOptions);
+    frontend.markDirty("Module/A");
+
+    auto result3 = lintModule("Module/A", overrideOptions);
     CHECK_EQ(1, result3.warnings.size());
 
     overrideOptions.disableWarning(LintWarning::Code_ForRange);
-    auto result4 = frontend.lint("Module/A", overrideOptions);
+    frontend.markDirty("Module/A");
+
+    auto result4 = lintModule("Module/A", overrideOptions);
     CHECK_EQ(0, result4.warnings.size());
+}
+
+TEST_CASE_FIXTURE(FrontendFixture, "lint_results_are_only_for_checked_module")
+{
+    fileResolver.source["Module/A"] = R"(
+local _ = 0b10000000000000000000000000000000000000000000000000000000000000000
+    )";
+
+    fileResolver.source["Module/B"] = R"(
+require(script.Parent.A)
+local _ = 0x10000000000000000
+    )";
+
+    LintResult lintResult = lintModule("Module/B");
+    CHECK_EQ(1, lintResult.warnings.size());
+
+    // Check cached result
+    lintResult = lintModule("Module/B");
+    CHECK_EQ(1, lintResult.warnings.size());
 }
 
 TEST_CASE_FIXTURE(FrontendFixture, "discard_type_graphs")
@@ -853,7 +877,7 @@ TEST_CASE_FIXTURE(FrontendFixture, "environments")
     ScopePtr testScope = frontend.addEnvironment("test");
 
     unfreeze(frontend.globals.globalTypes);
-    loadDefinitionFile(frontend.typeChecker, frontend.globals, testScope, R"(
+    frontend.loadDefinitionFile(frontend.globals, testScope, R"(
         export type Foo = number | string
     )",
         "@test", /* captureComments */ false);
@@ -1103,6 +1127,23 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "reexport_type_alias")
     CheckResult result = frontend.check("Module/B");
 
     LUAU_REQUIRE_NO_ERRORS(result);
+}
+
+TEST_CASE_FIXTURE(BuiltinsFixture, "module_scope_check")
+{
+    frontend.prepareModuleScope = [this](const ModuleName& name, const ScopePtr& scope, bool forAutocomplete) {
+        scope->bindings[Luau::AstName{"x"}] = Luau::Binding{frontend.globals.builtinTypes->numberType};
+    };
+
+    fileResolver.source["game/A"] = R"(
+        local a = x
+    )";
+
+    CheckResult result = frontend.check("game/A");
+    LUAU_REQUIRE_NO_ERRORS(result);
+
+    auto ty = requireType("game/A", "a");
+    CHECK_EQ(toString(ty), "number");
 }
 
 TEST_SUITE_END();

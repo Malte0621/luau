@@ -196,7 +196,6 @@ TEST_CASE_FIXTURE(Fixture, "index_on_a_union_type_with_missing_property")
     REQUIRE(bTy);
     CHECK_EQ(mup->missing[0], *bTy);
     CHECK_EQ(mup->key, "x");
-
     CHECK_EQ("*error-type*", toString(requireType("r")));
 }
 
@@ -354,7 +353,8 @@ a.x = 2
     )");
 
     LUAU_REQUIRE_ERROR_COUNT(1, result);
-    CHECK_EQ("Value of type '({| x: number |} & {| y: number |})?' could be nil", toString(result.errors[0]));
+    auto s = toString(result.errors[0]);
+    CHECK_EQ("Value of type '({| x: number |} & {| y: number |})?' could be nil", s);
 }
 
 TEST_CASE_FIXTURE(Fixture, "optional_length_error")
@@ -713,6 +713,80 @@ TEST_CASE_FIXTURE(Fixture, "less_greedy_unification_with_union_types_2")
     LUAU_REQUIRE_NO_ERRORS(result);
 
     CHECK_EQ("({| x: number |} | {| x: string |}) -> number | string", toString(requireType("f")));
+}
+
+TEST_CASE_FIXTURE(Fixture, "union_table_any_property")
+{
+    CheckResult result = check(R"(
+        function f(x)
+            -- x : X
+            -- sup : { p : { q : X } }?
+            local sup = if true then { p = { q = x } } else nil
+            local sub : { p : any }
+            sup = nil
+            sup = sub
+        end
+    )");
+
+    LUAU_REQUIRE_NO_ERRORS(result);
+}
+
+TEST_CASE_FIXTURE(Fixture, "union_function_any_args")
+{
+    CheckResult result = check(R"(
+        local sup : ((...any) -> (...any))?
+        local sub : ((number) -> (...any))
+        sup = sub
+    )");
+
+    LUAU_REQUIRE_NO_ERRORS(result);
+}
+
+TEST_CASE_FIXTURE(Fixture, "optional_any")
+{
+    CheckResult result = check(R"(
+        local sup : any?
+        local sub : number
+        sup = sub
+    )");
+
+    LUAU_REQUIRE_NO_ERRORS(result);
+}
+
+TEST_CASE_FIXTURE(Fixture, "generic_function_with_optional_arg")
+{
+    ScopedFastFlag sff[] = {
+        {"LuauTransitiveSubtyping", true},
+    };
+
+    CheckResult result = check(R"(
+        function f<T>(x : T?) : {T}
+            local result = {}
+            if x then
+                result[1] = x
+            end
+            return result
+        end
+        local t : {string} = f(nil)
+    )");
+
+    LUAU_REQUIRE_NO_ERRORS(result);
+}
+
+TEST_CASE_FIXTURE(Fixture, "lookup_prop_of_intersection_containing_unions")
+{
+    CheckResult result = check(R"(
+        local function mergeOptions<T>(options: T & ({} | {}))
+            return options.variables
+        end
+    )");
+
+    LUAU_REQUIRE_ERROR_COUNT(1, result);
+
+    const UnknownProperty* unknownProp = get<UnknownProperty>(result.errors[0]);
+    REQUIRE(unknownProp);
+
+    CHECK("variables" == unknownProp->key);
 }
 
 TEST_SUITE_END();

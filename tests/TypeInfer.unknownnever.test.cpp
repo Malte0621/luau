@@ -301,10 +301,6 @@ TEST_CASE_FIXTURE(Fixture, "length_of_never")
 
 TEST_CASE_FIXTURE(Fixture, "dont_unify_operands_if_one_of_the_operand_is_never_in_any_ordering_operators")
 {
-    ScopedFastFlag sff[]{
-        {"LuauTryhardAnd", true},
-    };
-
     CheckResult result = check(R"(
         local function ord(x: nil, y)
             return x ~= nil and x > y
@@ -313,13 +309,7 @@ TEST_CASE_FIXTURE(Fixture, "dont_unify_operands_if_one_of_the_operand_is_never_i
 
     LUAU_REQUIRE_NO_ERRORS(result);
 
-    if (FFlag::DebugLuauDeferredConstraintResolution)
-        CHECK_EQ("<a>(nil, a) -> boolean", toString(requireType("ord")));
-    else
-    {
-        // Widening doesn't normalize yet, so the result is a bit strange
-        CHECK_EQ("<a>(nil, a) -> boolean | boolean", toString(requireType("ord")));
-    }
+    CHECK_EQ("<a>(nil, a) -> boolean", toString(requireType("ord")));
 }
 
 TEST_CASE_FIXTURE(Fixture, "math_operators_and_never")
@@ -332,6 +322,18 @@ TEST_CASE_FIXTURE(Fixture, "math_operators_and_never")
 
     LUAU_REQUIRE_NO_ERRORS(result);
     CHECK_EQ("<a>(nil, a) -> boolean", toString(requireType("mul")));
+}
+
+TEST_CASE_FIXTURE(Fixture, "compare_never")
+{
+    CheckResult result = check(R"(
+        local function cmp(x: nil, y: number)
+            return x ~= nil and x > y and x < y -- infers boolean | never, which is normalized into boolean
+        end
+    )");
+
+    LUAU_REQUIRE_NO_ERRORS(result);
+    CHECK_EQ("(nil, number) -> boolean", toString(requireType("cmp")));
 }
 
 TEST_SUITE_END();

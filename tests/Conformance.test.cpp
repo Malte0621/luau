@@ -2,13 +2,14 @@
 #include "lua.h"
 #include "lualib.h"
 #include "luacode.h"
+#include "luacodegen.h"
 
 #include "Luau/BuiltinDefinitions.h"
 #include "Luau/ModuleResolver.h"
 #include "Luau/TypeInfer.h"
 #include "Luau/StringUtils.h"
 #include "Luau/BytecodeBuilder.h"
-#include "Luau/CodeGen.h"
+#include "Luau/Frontend.h"
 
 #include "doctest.h"
 #include "ScopedFlags.h"
@@ -158,8 +159,8 @@ static StateRef runConformance(const char* name, void (*setup)(lua_State* L) = n
     StateRef globalState(initialLuaState, lua_close);
     lua_State* L = globalState.get();
 
-    if (codegen && !skipCodegen && Luau::CodeGen::isSupported())
-        Luau::CodeGen::create(L);
+    if (codegen && !skipCodegen && luau_codegen_supported())
+        luau_codegen_create(L);
 
     luaL_openlibs(L);
 
@@ -212,8 +213,8 @@ static StateRef runConformance(const char* name, void (*setup)(lua_State* L) = n
     int result = luau_load(L, chunkname.c_str(), bytecode, bytecodeSize, 0);
     free(bytecode);
 
-    if (result == 0 && codegen && !skipCodegen && Luau::CodeGen::isSupported())
-        Luau::CodeGen::compile(L, -1);
+    if (result == 0 && codegen && !skipCodegen && luau_codegen_supported())
+        luau_codegen_compile(L, -1);
 
     int status = (result == 0) ? lua_resume(L, nullptr, 0) : LUA_ERRSYNTAX;
 
@@ -243,6 +244,24 @@ static StateRef runConformance(const char* name, void (*setup)(lua_State* L) = n
     return globalState;
 }
 
+static void* limitedRealloc(void* ud, void* ptr, size_t osize, size_t nsize)
+{
+    if (nsize == 0)
+    {
+        free(ptr);
+        return nullptr;
+    }
+    else if (nsize > 8 * 1024 * 1024)
+    {
+        // For testing purposes return null for large allocations so we can generate errors related to memory allocation failures
+        return nullptr;
+    }
+    else
+    {
+        return realloc(ptr, nsize);
+    }
+}
+
 TEST_SUITE_BEGIN("Conformance");
 
 TEST_CASE("Assert")
@@ -266,8 +285,16 @@ TEST_CASE("Tables")
         lua_pushcfunction(
             L,
             [](lua_State* L) {
-                unsigned v = luaL_checkunsigned(L, 1);
-                lua_pushlightuserdata(L, reinterpret_cast<void*>(uintptr_t(v)));
+                if (lua_type(L, 1) == LUA_TNUMBER)
+                {
+                    unsigned v = luaL_checkunsigned(L, 1);
+                    lua_pushlightuserdata(L, reinterpret_cast<void*>(uintptr_t(v)));
+                }
+                else
+                {
+                    const void* p = lua_topointer(L, 1);
+                    lua_pushlightuserdata(L, const_cast<void*>(p));
+                }
                 return 1;
             },
             "makelud");
@@ -381,21 +408,24 @@ static int cxxthrow(lua_State* L)
 
 TEST_CASE("PCall")
 {
-    runConformance("pcall.lua", [](lua_State* L) {
-        lua_pushcfunction(L, cxxthrow, "cxxthrow");
-        lua_setglobal(L, "cxxthrow");
+    runConformance(
+        "pcall.lua",
+        [](lua_State* L) {
+            lua_pushcfunction(L, cxxthrow, "cxxthrow");
+            lua_setglobal(L, "cxxthrow");
 
-        lua_pushcfunction(
-            L,
-            [](lua_State* L) -> int {
-                lua_State* co = lua_tothread(L, 1);
-                lua_xmove(L, co, 1);
-                lua_resumeerror(co, L);
-                return 0;
-            },
-            "resumeerror");
-        lua_setglobal(L, "resumeerror");
-    });
+            lua_pushcfunction(
+                L,
+                [](lua_State* L) -> int {
+                    lua_State* co = lua_tothread(L, 1);
+                    lua_xmove(L, co, 1);
+                    lua_resumeerror(co, L);
+                    return 0;
+                },
+                "resumeerror");
+            lua_setglobal(L, "resumeerror");
+        },
+        nullptr, lua_newstate(limitedRealloc, nullptr));
 }
 
 TEST_CASE("Pack")
@@ -472,7 +502,7 @@ static void populateRTTI(lua_State* L, Luau::TypeId type)
 
         for (const auto& [name, prop] : t->props)
         {
-            populateRTTI(L, prop.type);
+            populateRTTI(L, prop.type());
             lua_setfield(L, -2, name.c_str());
         }
     }
@@ -501,17 +531,15 @@ TEST_CASE("Types")
 {
     runConformance("types.lua", [](lua_State* L) {
         Luau::NullModuleResolver moduleResolver;
-        Luau::InternalErrorReporter iceHandler;
-        Luau::BuiltinTypes builtinTypes;
-        Luau::GlobalTypes globals{Luau::NotNull{&builtinTypes}};
-        Luau::TypeChecker env(globals, &moduleResolver, Luau::NotNull{&builtinTypes}, &iceHandler);
-
-        Luau::registerBuiltinGlobals(env, globals);
-        Luau::freeze(globals.globalTypes);
+        Luau::NullFileResolver fileResolver;
+        Luau::NullConfigResolver configResolver;
+        Luau::Frontend frontend{&fileResolver, &configResolver};
+        Luau::registerBuiltinGlobals(frontend, frontend.globals);
+        Luau::freeze(frontend.globals.globalTypes);
 
         lua_newtable(L);
 
-        for (const auto& [name, binding] : globals.globalScope->bindings)
+        for (const auto& [name, binding] : frontend.globals.globalScope->bindings)
         {
             populateRTTI(L, binding.typeId);
             lua_setfield(L, -2, toString(name).c_str());
@@ -675,6 +703,15 @@ TEST_CASE("Debugger")
                 CHECK(lua_tointeger(L, -1) == 9);
                 lua_pop(L, 1);
             }
+            else if (breakhits == 13)
+            {
+                // validate assignment via lua_getlocal
+                const char* l = lua_getlocal(L, 0, 1);
+                REQUIRE(l);
+                CHECK(strcmp(l, "a") == 0);
+                CHECK(lua_isnil(L, -1));
+                lua_pop(L, 1);
+            }
 
             if (interruptedthread)
             {
@@ -684,7 +721,7 @@ TEST_CASE("Debugger")
         },
         nullptr, &copts, /* skipCodegen */ true); // Native code doesn't support debugging yet
 
-    CHECK(breakhits == 12); // 2 hits per breakpoint
+    CHECK(breakhits == 14); // 2 hits per breakpoint
 
     if (singlestep)
         CHECK(stephits > 100); // note; this will depend on number of instructions which can vary, so we just make sure the callback gets hit often
@@ -882,7 +919,7 @@ TEST_CASE("ApiIter")
 
 TEST_CASE("ApiCalls")
 {
-    StateRef globalState = runConformance("apicalls.lua");
+    StateRef globalState = runConformance("apicalls.lua", nullptr, nullptr, lua_newstate(limitedRealloc, nullptr));
     lua_State* L = globalState.get();
 
     // lua_call
@@ -981,6 +1018,53 @@ TEST_CASE("ApiCalls")
         CHECK(lua_tonumber(L, -1) == 4);
         lua_pop(L, 1);
     }
+
+    // lua_pcall on OOM
+    {
+        lua_getfield(L, LUA_GLOBALSINDEX, "largealloc");
+        int res = lua_pcall(L, 0, 0, 0);
+        CHECK(res == LUA_ERRMEM);
+    }
+
+    // lua_pcall on OOM with an error handler
+    {
+        lua_getfield(L, LUA_GLOBALSINDEX, "oops");
+        lua_getfield(L, LUA_GLOBALSINDEX, "largealloc");
+        int res = lua_pcall(L, 0, 1, -2);
+        CHECK(res == LUA_ERRMEM);
+        CHECK((lua_isstring(L, -1) && strcmp(lua_tostring(L, -1), "oops") == 0));
+        lua_pop(L, 1);
+    }
+
+    // lua_pcall on OOM with an error handler that errors
+    {
+        lua_getfield(L, LUA_GLOBALSINDEX, "error");
+        lua_getfield(L, LUA_GLOBALSINDEX, "largealloc");
+        int res = lua_pcall(L, 0, 1, -2);
+        CHECK(res == LUA_ERRERR);
+        CHECK((lua_isstring(L, -1) && strcmp(lua_tostring(L, -1), "error in error handling") == 0));
+        lua_pop(L, 1);
+    }
+
+    // lua_pcall on OOM with an error handler that OOMs
+    {
+        lua_getfield(L, LUA_GLOBALSINDEX, "largealloc");
+        lua_getfield(L, LUA_GLOBALSINDEX, "largealloc");
+        int res = lua_pcall(L, 0, 1, -2);
+        CHECK(res == LUA_ERRMEM);
+        CHECK((lua_isstring(L, -1) && strcmp(lua_tostring(L, -1), "not enough memory") == 0));
+        lua_pop(L, 1);
+    }
+
+    // lua_pcall on error with an error handler that OOMs
+    {
+        lua_getfield(L, LUA_GLOBALSINDEX, "largealloc");
+        lua_getfield(L, LUA_GLOBALSINDEX, "error");
+        int res = lua_pcall(L, 0, 1, -2);
+        CHECK(res == LUA_ERRERR);
+        CHECK((lua_isstring(L, -1) && strcmp(lua_tostring(L, -1), "error in error handling") == 0));
+        lua_pop(L, 1);
+    }
 }
 
 TEST_CASE("ApiAtoms")
@@ -1051,26 +1135,7 @@ TEST_CASE("ExceptionObject")
         return ExceptionResult{false, ""};
     };
 
-    auto reallocFunc = [](void* /*ud*/, void* ptr, size_t /*osize*/, size_t nsize) -> void* {
-        if (nsize == 0)
-        {
-            free(ptr);
-            return nullptr;
-        }
-        else if (nsize > 512 * 1024)
-        {
-            // For testing purposes return null for large allocations
-            // so we can generate exceptions related to memory allocation
-            // failures.
-            return nullptr;
-        }
-        else
-        {
-            return realloc(ptr, nsize);
-        }
-    };
-
-    StateRef globalState = runConformance("exceptions.lua", nullptr, nullptr, lua_newstate(reallocFunc, nullptr));
+    StateRef globalState = runConformance("exceptions.lua", nullptr, nullptr, lua_newstate(limitedRealloc, nullptr));
     lua_State* L = globalState.get();
 
     {
@@ -1250,7 +1315,9 @@ TEST_CASE("Interrupt")
         13,
         13,
         16,
-        20,
+        23,
+        21,
+        25,
     };
     static int index;
 
@@ -1301,9 +1368,14 @@ TEST_CASE("UserdataApi")
     lua_State* L = globalState.get();
 
     // setup dtor for tag 42 (created later)
-    lua_setuserdatadtor(L, 42, [](lua_State* l, void* data) {
+    auto dtor = [](lua_State* l, void* data) {
         dtorhits += *(int*)data;
-    });
+    };
+    bool dtorIsNull = lua_getuserdatadtor(L, 42) == nullptr;
+    CHECK(dtorIsNull);
+    lua_setuserdatadtor(L, 42, dtor);
+    bool dtorIsSet = lua_getuserdatadtor(L, 42) == dtor;
+    CHECK(dtorIsSet);
 
     // light user data
     int lud;
@@ -1576,6 +1648,11 @@ TEST_CASE("SafeEnv")
     runConformance("safeenv.lua");
 }
 
+TEST_CASE("Native")
+{
+    runConformance("native.lua");
+}
+
 TEST_CASE("HugeFunction")
 {
     std::string source;
@@ -1600,8 +1677,8 @@ TEST_CASE("HugeFunction")
     StateRef globalState(luaL_newstate(), lua_close);
     lua_State* L = globalState.get();
 
-    if (codegen && Luau::CodeGen::isSupported())
-        Luau::CodeGen::create(L);
+    if (codegen && luau_codegen_supported())
+        luau_codegen_create(L);
 
     luaL_openlibs(L);
     luaL_sandbox(L);
@@ -1614,8 +1691,8 @@ TEST_CASE("HugeFunction")
 
     REQUIRE(result == 0);
 
-    if (codegen && Luau::CodeGen::isSupported())
-        Luau::CodeGen::compile(L, -1);
+    if (codegen && luau_codegen_supported())
+        luau_codegen_compile(L, -1);
 
     int status = lua_resume(L, nullptr, 0);
     REQUIRE(status == 0);

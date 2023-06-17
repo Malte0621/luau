@@ -5,6 +5,7 @@
 #include "Luau/Breadcrumb.h"
 #include "Luau/Common.h"
 #include "Luau/Constraint.h"
+#include "Luau/ControlFlow.h"
 #include "Luau/DcrLogger.h"
 #include "Luau/ModuleResolver.h"
 #include "Luau/RecursionCounter.h"
@@ -12,16 +13,21 @@
 #include "Luau/Scope.h"
 #include "Luau/TypeUtils.h"
 #include "Luau/Type.h"
+#include "Luau/TypeFamily.h"
+#include "Luau/Simplify.h"
+#include "Luau/VisitType.h"
+#include "Luau/InsertionOrderedMap.h"
 
 #include <algorithm>
 
 LUAU_FASTINT(LuauCheckRecursionLimit);
 LUAU_FASTFLAG(DebugLuauMagicTypes);
-LUAU_FASTFLAG(LuauNegatedClassTypes);
+LUAU_FASTFLAG(LuauParseDeclareClassIndexer);
 
 namespace Luau
 {
 
+bool doesCallError(const AstExprCall* call);        // TypeInfer.cpp
 const AstStat* getFallthrough(const AstStat* node); // TypeInfer.cpp
 
 static std::optional<AstExpr*> matchRequire(const AstExprCall& call)
@@ -131,11 +137,10 @@ void forEachConstraint(const Checkpoint& start, const Checkpoint& end, const Con
 
 } // namespace
 
-ConstraintGraphBuilder::ConstraintGraphBuilder(const ModuleName& moduleName, ModulePtr module, TypeArena* arena,
-    NotNull<ModuleResolver> moduleResolver, NotNull<BuiltinTypes> builtinTypes, NotNull<InternalErrorReporter> ice, const ScopePtr& globalScope,
-    DcrLogger* logger, NotNull<DataFlowGraph> dfg)
-    : moduleName(moduleName)
-    , module(module)
+ConstraintGraphBuilder::ConstraintGraphBuilder(ModulePtr module, TypeArena* arena, NotNull<ModuleResolver> moduleResolver,
+    NotNull<BuiltinTypes> builtinTypes, NotNull<InternalErrorReporter> ice, const ScopePtr& globalScope,
+    std::function<void(const ModuleName&, const ScopePtr&)> prepareModuleScope, DcrLogger* logger, NotNull<DataFlowGraph> dfg)
+    : module(module)
     , builtinTypes(builtinTypes)
     , arena(arena)
     , rootScope(nullptr)
@@ -143,6 +148,7 @@ ConstraintGraphBuilder::ConstraintGraphBuilder(const ModuleName& moduleName, Mod
     , moduleResolver(moduleResolver)
     , ice(ice)
     , globalScope(globalScope)
+    , prepareModuleScope(std::move(prepareModuleScope))
     , logger(logger)
 {
     LUAU_ASSERT(module);
@@ -192,10 +198,25 @@ struct RefinementPartition
     bool shouldAppendNilType = false;
 };
 
-using RefinementContext = std::unordered_map<DefId, RefinementPartition>;
+using RefinementContext = InsertionOrderedMap<DefId, RefinementPartition>;
 
-static void unionRefinements(const RefinementContext& lhs, const RefinementContext& rhs, RefinementContext& dest, NotNull<TypeArena> arena)
+static void unionRefinements(NotNull<BuiltinTypes> builtinTypes, NotNull<TypeArena> arena, const RefinementContext& lhs, const RefinementContext& rhs,
+    RefinementContext& dest, std::vector<ConstraintV>* constraints)
 {
+    const auto intersect = [&](const std::vector<TypeId>& types) {
+        if (1 == types.size())
+            return types[0];
+        else if (2 == types.size())
+        {
+            // TODO: It may be advantageous to create a RefineConstraint here when there are blockedTypes.
+            SimplifyResult sr = simplifyIntersection(builtinTypes, arena, types[0], types[1]);
+            if (sr.blockedTypes.empty())
+                return sr.result;
+        }
+
+        return arena->addType(IntersectionType{types});
+    };
+
     for (auto& [def, partition] : lhs)
     {
         auto rhsIt = rhs.find(def);
@@ -205,55 +226,55 @@ static void unionRefinements(const RefinementContext& lhs, const RefinementConte
         LUAU_ASSERT(!partition.discriminantTypes.empty());
         LUAU_ASSERT(!rhsIt->second.discriminantTypes.empty());
 
-        TypeId leftDiscriminantTy =
-            partition.discriminantTypes.size() == 1 ? partition.discriminantTypes[0] : arena->addType(IntersectionType{partition.discriminantTypes});
+        TypeId leftDiscriminantTy = partition.discriminantTypes.size() == 1 ? partition.discriminantTypes[0] : intersect(partition.discriminantTypes);
 
-        TypeId rightDiscriminantTy = rhsIt->second.discriminantTypes.size() == 1 ? rhsIt->second.discriminantTypes[0]
-                                                                                 : arena->addType(IntersectionType{rhsIt->second.discriminantTypes});
+        TypeId rightDiscriminantTy =
+            rhsIt->second.discriminantTypes.size() == 1 ? rhsIt->second.discriminantTypes[0] : intersect(rhsIt->second.discriminantTypes);
 
-        dest[def].discriminantTypes.push_back(arena->addType(UnionType{{leftDiscriminantTy, rightDiscriminantTy}}));
-        dest[def].shouldAppendNilType |= partition.shouldAppendNilType || rhsIt->second.shouldAppendNilType;
+        dest.insert(def, {});
+        dest.get(def)->discriminantTypes.push_back(simplifyUnion(builtinTypes, arena, leftDiscriminantTy, rightDiscriminantTy).result);
+        dest.get(def)->shouldAppendNilType |= partition.shouldAppendNilType || rhsIt->second.shouldAppendNilType;
     }
 }
 
-static void computeRefinement(const ScopePtr& scope, RefinementId refinement, RefinementContext* refis, bool sense, NotNull<TypeArena> arena, bool eq,
-    std::vector<ConstraintV>* constraints)
+static void computeRefinement(NotNull<BuiltinTypes> builtinTypes, NotNull<TypeArena> arena, const ScopePtr& scope, RefinementId refinement,
+    RefinementContext* refis, bool sense, bool eq, std::vector<ConstraintV>* constraints)
 {
     if (!refinement)
         return;
     else if (auto variadic = get<Variadic>(refinement))
     {
         for (RefinementId refi : variadic->refinements)
-            computeRefinement(scope, refi, refis, sense, arena, eq, constraints);
+            computeRefinement(builtinTypes, arena, scope, refi, refis, sense, eq, constraints);
     }
     else if (auto negation = get<Negation>(refinement))
-        return computeRefinement(scope, negation->refinement, refis, !sense, arena, eq, constraints);
+        return computeRefinement(builtinTypes, arena, scope, negation->refinement, refis, !sense, eq, constraints);
     else if (auto conjunction = get<Conjunction>(refinement))
     {
         RefinementContext lhsRefis;
         RefinementContext rhsRefis;
 
-        computeRefinement(scope, conjunction->lhs, sense ? refis : &lhsRefis, sense, arena, eq, constraints);
-        computeRefinement(scope, conjunction->rhs, sense ? refis : &rhsRefis, sense, arena, eq, constraints);
+        computeRefinement(builtinTypes, arena, scope, conjunction->lhs, sense ? refis : &lhsRefis, sense, eq, constraints);
+        computeRefinement(builtinTypes, arena, scope, conjunction->rhs, sense ? refis : &rhsRefis, sense, eq, constraints);
 
         if (!sense)
-            unionRefinements(lhsRefis, rhsRefis, *refis, arena);
+            unionRefinements(builtinTypes, arena, lhsRefis, rhsRefis, *refis, constraints);
     }
     else if (auto disjunction = get<Disjunction>(refinement))
     {
         RefinementContext lhsRefis;
         RefinementContext rhsRefis;
 
-        computeRefinement(scope, disjunction->lhs, sense ? &lhsRefis : refis, sense, arena, eq, constraints);
-        computeRefinement(scope, disjunction->rhs, sense ? &rhsRefis : refis, sense, arena, eq, constraints);
+        computeRefinement(builtinTypes, arena, scope, disjunction->lhs, sense ? &lhsRefis : refis, sense, eq, constraints);
+        computeRefinement(builtinTypes, arena, scope, disjunction->rhs, sense ? &rhsRefis : refis, sense, eq, constraints);
 
         if (sense)
-            unionRefinements(lhsRefis, rhsRefis, *refis, arena);
+            unionRefinements(builtinTypes, arena, lhsRefis, rhsRefis, *refis, constraints);
     }
     else if (auto equivalence = get<Equivalence>(refinement))
     {
-        computeRefinement(scope, equivalence->lhs, refis, sense, arena, true, constraints);
-        computeRefinement(scope, equivalence->rhs, refis, sense, arena, true, constraints);
+        computeRefinement(builtinTypes, arena, scope, equivalence->lhs, refis, sense, true, constraints);
+        computeRefinement(builtinTypes, arena, scope, equivalence->rhs, refis, sense, true, constraints);
     }
     else if (auto proposition = get<Proposition>(refinement))
     {
@@ -267,11 +288,12 @@ static void computeRefinement(const ScopePtr& scope, RefinementId refinement, Re
         }
 
         RefinementContext uncommittedRefis;
-        uncommittedRefis[proposition->breadcrumb->def].discriminantTypes.push_back(discriminantTy);
+        uncommittedRefis.insert(proposition->breadcrumb->def, {});
+        uncommittedRefis.get(proposition->breadcrumb->def)->discriminantTypes.push_back(discriminantTy);
 
         // When the top-level expression is `t[x]`, we want to refine it into `nil`, not `never`.
         if ((sense || !eq) && getMetadata<SubscriptMetadata>(proposition->breadcrumb))
-            uncommittedRefis[proposition->breadcrumb->def].shouldAppendNilType = true;
+            uncommittedRefis.get(proposition->breadcrumb->def)->shouldAppendNilType = true;
 
         for (NullableBreadcrumbId current = proposition->breadcrumb; current && current->previous; current = current->previous)
         {
@@ -284,20 +306,80 @@ static void computeRefinement(const ScopePtr& scope, RefinementId refinement, Re
             {
                 TableType::Props props{{field->prop, Property{discriminantTy}}};
                 discriminantTy = arena->addType(TableType{std::move(props), std::nullopt, TypeLevel{}, scope.get(), TableState::Sealed});
-                uncommittedRefis[current->previous->def].discriminantTypes.push_back(discriminantTy);
+                uncommittedRefis.insert(current->previous->def, {});
+                uncommittedRefis.get(current->previous->def)->discriminantTypes.push_back(discriminantTy);
             }
         }
 
         // And now it's time to commit it.
         for (auto& [def, partition] : uncommittedRefis)
         {
-            for (TypeId discriminantTy : partition.discriminantTypes)
-                (*refis)[def].discriminantTypes.push_back(discriminantTy);
+            (*refis).insert(def, {});
 
-            (*refis)[def].shouldAppendNilType |= partition.shouldAppendNilType;
+            for (TypeId discriminantTy : partition.discriminantTypes)
+                (*refis).get(def)->discriminantTypes.push_back(discriminantTy);
+
+            (*refis).get(def)->shouldAppendNilType |= partition.shouldAppendNilType;
         }
     }
 }
+
+namespace
+{
+
+/*
+ * Constraint generation may be called upon to simplify an intersection or union
+ * of types that are not sufficiently solved yet.  We use
+ * FindSimplificationBlockers to recognize these types and defer the
+ * simplification until constraint solution.
+ */
+struct FindSimplificationBlockers : TypeOnceVisitor
+{
+    bool found = false;
+
+    bool visit(TypeId) override
+    {
+        return !found;
+    }
+
+    bool visit(TypeId, const BlockedType&) override
+    {
+        found = true;
+        return false;
+    }
+
+    bool visit(TypeId, const FreeType&) override
+    {
+        found = true;
+        return false;
+    }
+
+    bool visit(TypeId, const PendingExpansionType&) override
+    {
+        found = true;
+        return false;
+    }
+
+    // We do not need to know anything at all about a function's argument or
+    // return types in order to simplify it in an intersection or union.
+    bool visit(TypeId, const FunctionType&) override
+    {
+        return false;
+    }
+
+    bool visit(TypeId, const ClassType&) override
+    {
+        return false;
+    }
+};
+
+bool mustDeferIntersection(TypeId ty)
+{
+    FindSimplificationBlockers bts;
+    bts.traverse(ty);
+    return bts.found;
+}
+} // namespace
 
 void ConstraintGraphBuilder::applyRefinements(const ScopePtr& scope, Location location, RefinementId refinement)
 {
@@ -306,7 +388,7 @@ void ConstraintGraphBuilder::applyRefinements(const ScopePtr& scope, Location lo
 
     RefinementContext refinements;
     std::vector<ConstraintV> constraints;
-    computeRefinement(scope, refinement, &refinements, /*sense*/ true, arena, /*eq*/ false, &constraints);
+    computeRefinement(builtinTypes, arena, scope, refinement, &refinements, /*sense*/ true, /*eq*/ false, &constraints);
 
     for (auto& [def, partition] : refinements)
     {
@@ -316,8 +398,24 @@ void ConstraintGraphBuilder::applyRefinements(const ScopePtr& scope, Location lo
             if (partition.shouldAppendNilType)
                 ty = arena->addType(UnionType{{ty, builtinTypes->nilType}});
 
-            partition.discriminantTypes.push_back(ty);
-            scope->dcrRefinements[def] = arena->addType(IntersectionType{std::move(partition.discriminantTypes)});
+            // Intersect ty with every discriminant type. If either type is not
+            // sufficiently solved, we queue the intersection up via an
+            // IntersectConstraint.
+
+            for (TypeId dt : partition.discriminantTypes)
+            {
+                if (mustDeferIntersection(ty) || mustDeferIntersection(dt))
+                {
+                    TypeId r = arena->addType(BlockedType{});
+                    addConstraint(scope, location, RefineConstraint{RefineConstraint::Intersection, r, ty, dt});
+
+                    ty = r;
+                }
+                else
+                    ty = simplifyIntersection(builtinTypes, arena, ty, dt).result;
+            }
+
+            scope->dcrRefinements[def] = ty;
         }
     }
 
@@ -344,14 +442,14 @@ void ConstraintGraphBuilder::visit(AstStatBlock* block)
         logger->captureGenerationModule(module);
 }
 
-void ConstraintGraphBuilder::visitBlockWithoutChildScope(const ScopePtr& scope, AstStatBlock* block)
+ControlFlow ConstraintGraphBuilder::visitBlockWithoutChildScope(const ScopePtr& scope, AstStatBlock* block)
 {
     RecursionCounter counter{&recursionCount};
 
     if (recursionCount >= FInt::LuauCheckRecursionLimit)
     {
         reportCodeTooComplex(block->location);
-        return;
+        return ControlFlow::None;
     }
 
     std::unordered_map<Name, Location> aliasDefinitionLocations;
@@ -396,59 +494,77 @@ void ConstraintGraphBuilder::visitBlockWithoutChildScope(const ScopePtr& scope, 
         }
     }
 
+    std::optional<ControlFlow> firstControlFlow;
     for (AstStat* stat : block->body)
-        visit(scope, stat);
+    {
+        ControlFlow cf = visit(scope, stat);
+        if (cf != ControlFlow::None && !firstControlFlow)
+            firstControlFlow = cf;
+    }
+
+    return firstControlFlow.value_or(ControlFlow::None);
 }
 
-void ConstraintGraphBuilder::visit(const ScopePtr& scope, AstStat* stat)
+ControlFlow ConstraintGraphBuilder::visit(const ScopePtr& scope, AstStat* stat)
 {
     RecursionLimiter limiter{&recursionCount, FInt::LuauCheckRecursionLimit};
 
     if (auto s = stat->as<AstStatBlock>())
-        visit(scope, s);
+        return visit(scope, s);
     else if (auto i = stat->as<AstStatIf>())
-        visit(scope, i);
+        return visit(scope, i);
     else if (auto s = stat->as<AstStatWhile>())
-        visit(scope, s);
+        return visit(scope, s);
     else if (auto s = stat->as<AstStatRepeat>())
-        visit(scope, s);
+        return visit(scope, s);
     else if (stat->is<AstStatBreak>() || stat->is<AstStatContinue>())
     {
         // Nothing
+        return ControlFlow::None; // TODO: ControlFlow::Break/Continue
     }
     else if (auto r = stat->as<AstStatReturn>())
-        visit(scope, r);
+        return visit(scope, r);
     else if (auto e = stat->as<AstStatExpr>())
+    {
         checkPack(scope, e->expr);
+
+        if (auto call = e->expr->as<AstExprCall>(); call && doesCallError(call))
+            return ControlFlow::Throws;
+
+        return ControlFlow::None;
+    }
     else if (auto s = stat->as<AstStatLocal>())
-        visit(scope, s);
+        return visit(scope, s);
     else if (auto s = stat->as<AstStatFor>())
-        visit(scope, s);
+        return visit(scope, s);
     else if (auto s = stat->as<AstStatForIn>())
-        visit(scope, s);
+        return visit(scope, s);
     else if (auto a = stat->as<AstStatAssign>())
-        visit(scope, a);
+        return visit(scope, a);
     else if (auto a = stat->as<AstStatCompoundAssign>())
-        visit(scope, a);
+        return visit(scope, a);
     else if (auto f = stat->as<AstStatFunction>())
-        visit(scope, f);
+        return visit(scope, f);
     else if (auto f = stat->as<AstStatLocalFunction>())
-        visit(scope, f);
+        return visit(scope, f);
     else if (auto a = stat->as<AstStatTypeAlias>())
-        visit(scope, a);
+        return visit(scope, a);
     else if (auto s = stat->as<AstStatDeclareGlobal>())
-        visit(scope, s);
+        return visit(scope, s);
     else if (auto s = stat->as<AstStatDeclareFunction>())
-        visit(scope, s);
+        return visit(scope, s);
     else if (auto s = stat->as<AstStatDeclareClass>())
-        visit(scope, s);
+        return visit(scope, s);
     else if (auto s = stat->as<AstStatError>())
-        visit(scope, s);
+        return visit(scope, s);
     else
+    {
         LUAU_ASSERT(0 && "Internal error: Unknown AstStat type");
+        return ControlFlow::None;
+    }
 }
 
-void ConstraintGraphBuilder::visit(const ScopePtr& scope, AstStatLocal* local)
+ControlFlow ConstraintGraphBuilder::visit(const ScopePtr& scope, AstStatLocal* local)
 {
     std::vector<TypeId> varTypes;
     varTypes.reserve(local->vars.size);
@@ -491,7 +607,7 @@ void ConstraintGraphBuilder::visit(const ScopePtr& scope, AstStatLocal* local)
             if (hasAnnotation)
                 expectedType = varTypes.at(i);
 
-            TypeId exprType = check(scope, value, expectedType).ty;
+            TypeId exprType = check(scope, value, ValueContext::RValue, expectedType).ty;
             if (i < varTypes.size())
             {
                 if (varTypes[i])
@@ -534,7 +650,7 @@ void ConstraintGraphBuilder::visit(const ScopePtr& scope, AstStatLocal* local)
         }
     }
 
-    if (local->vars.size == 1 && local->values.size == 1 && firstValueType)
+    if (local->vars.size == 1 && local->values.size == 1 && firstValueType && scope.get() == rootScope)
     {
         AstLocal* var = local->vars.data[0];
         AstExpr* value = local->values.data[0];
@@ -579,7 +695,7 @@ void ConstraintGraphBuilder::visit(const ScopePtr& scope, AstStatLocal* local)
             {
                 AstExpr* require = *maybeRequire;
 
-                if (auto moduleInfo = moduleResolver->resolveModuleInfo(moduleName, *require))
+                if (auto moduleInfo = moduleResolver->resolveModuleInfo(module->name, *require))
                 {
                     const Name name{local->vars.data[i]->name.value};
 
@@ -592,9 +708,11 @@ void ConstraintGraphBuilder::visit(const ScopePtr& scope, AstStatLocal* local)
             }
         }
     }
+
+    return ControlFlow::None;
 }
 
-void ConstraintGraphBuilder::visit(const ScopePtr& scope, AstStatFor* for_)
+ControlFlow ConstraintGraphBuilder::visit(const ScopePtr& scope, AstStatFor* for_)
 {
     TypeId annotationTy = builtinTypes->numberType;
     if (for_->var->annotation)
@@ -619,9 +737,11 @@ void ConstraintGraphBuilder::visit(const ScopePtr& scope, AstStatFor* for_)
     forScope->dcrRefinements[bc->def] = annotationTy;
 
     visit(forScope, for_->body);
+
+    return ControlFlow::None;
 }
 
-void ConstraintGraphBuilder::visit(const ScopePtr& scope, AstStatForIn* forIn)
+ControlFlow ConstraintGraphBuilder::visit(const ScopePtr& scope, AstStatForIn* forIn)
 {
     ScopePtr loopScope = childScope(forIn, scope);
 
@@ -642,30 +762,36 @@ void ConstraintGraphBuilder::visit(const ScopePtr& scope, AstStatForIn* forIn)
     // It is always ok to provide too few variables, so we give this pack a free tail.
     TypePackId variablePack = arena->addTypePack(std::move(variableTypes), arena->addTypePack(FreeTypePack{loopScope.get()}));
 
-    addConstraint(loopScope, getLocation(forIn->values), IterableConstraint{iterator, variablePack});
-
+    addConstraint(
+        loopScope, getLocation(forIn->values), IterableConstraint{iterator, variablePack, forIn->values.data[0], &module->astOverloadResolvedTypes});
     visit(loopScope, forIn->body);
+
+    return ControlFlow::None;
 }
 
-void ConstraintGraphBuilder::visit(const ScopePtr& scope, AstStatWhile* while_)
+ControlFlow ConstraintGraphBuilder::visit(const ScopePtr& scope, AstStatWhile* while_)
 {
     check(scope, while_->condition);
 
     ScopePtr whileScope = childScope(while_, scope);
 
     visit(whileScope, while_->body);
+
+    return ControlFlow::None;
 }
 
-void ConstraintGraphBuilder::visit(const ScopePtr& scope, AstStatRepeat* repeat)
+ControlFlow ConstraintGraphBuilder::visit(const ScopePtr& scope, AstStatRepeat* repeat)
 {
     ScopePtr repeatScope = childScope(repeat, scope);
 
     visitBlockWithoutChildScope(repeatScope, repeat->body);
 
     check(repeatScope, repeat->condition);
+
+    return ControlFlow::None;
 }
 
-void ConstraintGraphBuilder::visit(const ScopePtr& scope, AstStatLocalFunction* function)
+ControlFlow ConstraintGraphBuilder::visit(const ScopePtr& scope, AstStatLocalFunction* function)
 {
     // Local
     // Global
@@ -679,7 +805,7 @@ void ConstraintGraphBuilder::visit(const ScopePtr& scope, AstStatLocalFunction* 
     functionType = arena->addType(BlockedType{});
     scope->bindings[function->name] = Binding{functionType, function->name->location};
 
-    FunctionSignature sig = checkFunctionSignature(scope, function->func);
+    FunctionSignature sig = checkFunctionSignature(scope, function->func, /* expectedType */ std::nullopt, function->name->location);
     sig.bodyScope->bindings[function->name] = Binding{sig.signature, function->func->location};
 
     BreadcrumbId bc = dfg->getBreadcrumb(function->name);
@@ -699,9 +825,12 @@ void ConstraintGraphBuilder::visit(const ScopePtr& scope, AstStatLocalFunction* 
     });
 
     addConstraint(scope, std::move(c));
+    module->astTypes[function->func] = functionType;
+
+    return ControlFlow::None;
 }
 
-void ConstraintGraphBuilder::visit(const ScopePtr& scope, AstStatFunction* function)
+ControlFlow ConstraintGraphBuilder::visit(const ScopePtr& scope, AstStatFunction* function)
 {
     // Name could be AstStatLocal, AstStatGlobal, AstStatIndexName.
     // With or without self
@@ -709,9 +838,11 @@ void ConstraintGraphBuilder::visit(const ScopePtr& scope, AstStatFunction* funct
     TypeId generalizedType = arena->addType(BlockedType{});
 
     Checkpoint start = checkpoint(this);
-    FunctionSignature sig = checkFunctionSignature(scope, function->func);
+    FunctionSignature sig = checkFunctionSignature(scope, function->func, /* expectedType */ std::nullopt, function->name->location);
 
     std::unordered_set<Constraint*> excludeList;
+
+    const NullableBreadcrumbId functionBreadcrumb = dfg->getBreadcrumb(function->name);
 
     if (AstExprLocal* localName = function->name->as<AstExprLocal>())
     {
@@ -727,6 +858,9 @@ void ConstraintGraphBuilder::visit(const ScopePtr& scope, AstStatFunction* funct
             scope->bindings[localName->local] = Binding{generalizedType, localName->location};
 
         sig.bodyScope->bindings[localName->local] = Binding{sig.signature, localName->location};
+
+        if (functionBreadcrumb)
+            sig.bodyScope->dcrRefinements[functionBreadcrumb->def] = sig.signature;
     }
     else if (AstExprGlobal* globalName = function->name->as<AstExprGlobal>())
     {
@@ -737,6 +871,9 @@ void ConstraintGraphBuilder::visit(const ScopePtr& scope, AstStatFunction* funct
         generalizedType = *existingFunctionTy;
 
         sig.bodyScope->bindings[globalName->name] = Binding{sig.signature, globalName->location};
+
+        if (functionBreadcrumb)
+            sig.bodyScope->dcrRefinements[functionBreadcrumb->def] = sig.signature;
     }
     else if (AstExprIndexName* indexName = function->name->as<AstExprIndexName>())
     {
@@ -763,8 +900,8 @@ void ConstraintGraphBuilder::visit(const ScopePtr& scope, AstStatFunction* funct
     if (generalizedType == nullptr)
         ice->ice("generalizedType == nullptr", function->location);
 
-    if (NullableBreadcrumbId bc = dfg->getBreadcrumb(function->name))
-        scope->dcrRefinements[bc->def] = generalizedType;
+    if (functionBreadcrumb)
+        scope->dcrRefinements[functionBreadcrumb->def] = generalizedType;
 
     checkFunctionBody(sig.bodyScope, function->func);
     Checkpoint end = checkpoint(this);
@@ -779,9 +916,11 @@ void ConstraintGraphBuilder::visit(const ScopePtr& scope, AstStatFunction* funct
     });
 
     addConstraint(scope, std::move(c));
+
+    return ControlFlow::None;
 }
 
-void ConstraintGraphBuilder::visit(const ScopePtr& scope, AstStatReturn* ret)
+ControlFlow ConstraintGraphBuilder::visit(const ScopePtr& scope, AstStatReturn* ret)
 {
     // At this point, the only way scope->returnType should have anything
     // interesting in it is if the function has an explicit return annotation.
@@ -793,13 +932,18 @@ void ConstraintGraphBuilder::visit(const ScopePtr& scope, AstStatReturn* ret)
 
     TypePackId exprTypes = checkPack(scope, ret->list, expectedTypes).tp;
     addConstraint(scope, ret->location, PackSubtypeConstraint{exprTypes, scope->returnType});
+
+    return ControlFlow::Returns;
 }
 
-void ConstraintGraphBuilder::visit(const ScopePtr& scope, AstStatBlock* block)
+ControlFlow ConstraintGraphBuilder::visit(const ScopePtr& scope, AstStatBlock* block)
 {
     ScopePtr innerScope = childScope(block, scope);
 
-    visitBlockWithoutChildScope(innerScope, block);
+    ControlFlow flow = visitBlockWithoutChildScope(innerScope, block);
+    scope->inheritRefinements(innerScope);
+
+    return flow;
 }
 
 static void bindFreeType(TypeId a, TypeId b)
@@ -819,7 +963,7 @@ static void bindFreeType(TypeId a, TypeId b)
         asMutable(b)->ty.emplace<BoundType>(a);
 }
 
-void ConstraintGraphBuilder::visit(const ScopePtr& scope, AstStatAssign* assign)
+ControlFlow ConstraintGraphBuilder::visit(const ScopePtr& scope, AstStatAssign* assign)
 {
     std::vector<TypeId> varTypes = checkLValues(scope, assign->vars);
 
@@ -839,9 +983,11 @@ void ConstraintGraphBuilder::visit(const ScopePtr& scope, AstStatAssign* assign)
     TypePackId varPack = arena->addTypePack({varTypes});
 
     addConstraint(scope, assign->location, PackSubtypeConstraint{exprPack, varPack});
+
+    return ControlFlow::None;
 }
 
-void ConstraintGraphBuilder::visit(const ScopePtr& scope, AstStatCompoundAssign* assign)
+ControlFlow ConstraintGraphBuilder::visit(const ScopePtr& scope, AstStatCompoundAssign* assign)
 {
     // We need to tweak the BinaryConstraint that we emit, so we cannot use the
     // strategy of falsifying an AST fragment.
@@ -852,23 +998,34 @@ void ConstraintGraphBuilder::visit(const ScopePtr& scope, AstStatCompoundAssign*
     addConstraint(scope, assign->location,
         BinaryConstraint{assign->op, varTy, valueTy, resultType, assign, &module->astOriginalCallTypes, &module->astOverloadResolvedTypes});
     addConstraint(scope, assign->location, SubtypeConstraint{resultType, varTy});
+
+    return ControlFlow::None;
 }
 
-void ConstraintGraphBuilder::visit(const ScopePtr& scope, AstStatIf* ifStatement)
+ControlFlow ConstraintGraphBuilder::visit(const ScopePtr& scope, AstStatIf* ifStatement)
 {
-    ScopePtr condScope = childScope(ifStatement->condition, scope);
-    RefinementId refinement = check(condScope, ifStatement->condition, std::nullopt).refinement;
+    RefinementId refinement = check(scope, ifStatement->condition, ValueContext::RValue, std::nullopt).refinement;
 
     ScopePtr thenScope = childScope(ifStatement->thenbody, scope);
     applyRefinements(thenScope, ifStatement->condition->location, refinement);
-    visit(thenScope, ifStatement->thenbody);
 
+    ScopePtr elseScope = childScope(ifStatement->elsebody ? ifStatement->elsebody : ifStatement, scope);
+    applyRefinements(elseScope, ifStatement->elseLocation.value_or(ifStatement->condition->location), refinementArena.negation(refinement));
+
+    ControlFlow thencf = visit(thenScope, ifStatement->thenbody);
+    ControlFlow elsecf = ControlFlow::None;
     if (ifStatement->elsebody)
-    {
-        ScopePtr elseScope = childScope(ifStatement->elsebody, scope);
-        applyRefinements(elseScope, ifStatement->elseLocation.value_or(ifStatement->condition->location), refinementArena.negation(refinement));
-        visit(elseScope, ifStatement->elsebody);
-    }
+        elsecf = visit(elseScope, ifStatement->elsebody);
+
+    if (matches(thencf, ControlFlow::Returns | ControlFlow::Throws) && elsecf == ControlFlow::None)
+        scope->inheritRefinements(elseScope);
+    else if (thencf == ControlFlow::None && matches(elsecf, ControlFlow::Returns | ControlFlow::Throws))
+        scope->inheritRefinements(thenScope);
+
+    if (matches(thencf, ControlFlow::Returns | ControlFlow::Throws) && matches(elsecf, ControlFlow::Returns | ControlFlow::Throws))
+        return ControlFlow::Returns;
+    else
+        return ControlFlow::None;
 }
 
 static bool occursCheck(TypeId needle, TypeId haystack)
@@ -890,7 +1047,7 @@ static bool occursCheck(TypeId needle, TypeId haystack)
     return false;
 }
 
-void ConstraintGraphBuilder::visit(const ScopePtr& scope, AstStatTypeAlias* alias)
+ControlFlow ConstraintGraphBuilder::visit(const ScopePtr& scope, AstStatTypeAlias* alias)
 {
     ScopePtr* defnScope = astTypeAliasDefiningScopes.find(alias);
 
@@ -904,7 +1061,7 @@ void ConstraintGraphBuilder::visit(const ScopePtr& scope, AstStatTypeAlias* alia
     // case we just skip over it.
     auto bindingIt = typeBindings->find(alias->name.value);
     if (bindingIt == typeBindings->end() || defnScope == nullptr)
-        return;
+        return ControlFlow::None;
 
     TypeId ty = resolveType(*defnScope, alias->type, /* inTypeArguments */ false);
 
@@ -935,9 +1092,11 @@ void ConstraintGraphBuilder::visit(const ScopePtr& scope, AstStatTypeAlias* alia
             std::move(typeParams),
             std::move(typePackParams),
         });
+
+    return ControlFlow::None;
 }
 
-void ConstraintGraphBuilder::visit(const ScopePtr& scope, AstStatDeclareGlobal* global)
+ControlFlow ConstraintGraphBuilder::visit(const ScopePtr& scope, AstStatDeclareGlobal* global)
 {
     LUAU_ASSERT(global->type);
 
@@ -949,6 +1108,8 @@ void ConstraintGraphBuilder::visit(const ScopePtr& scope, AstStatDeclareGlobal* 
 
     BreadcrumbId bc = dfg->getBreadcrumb(global);
     rootScope->dcrRefinements[bc->def] = globalTy;
+
+    return ControlFlow::None;
 }
 
 static bool isMetamethod(const Name& name)
@@ -958,9 +1119,9 @@ static bool isMetamethod(const Name& name)
            name == "__metatable" || name == "__eq" || name == "__lt" || name == "__le" || name == "__mode" || name == "__iter" || name == "__len";
 }
 
-void ConstraintGraphBuilder::visit(const ScopePtr& scope, AstStatDeclareClass* declaredClass)
+ControlFlow ConstraintGraphBuilder::visit(const ScopePtr& scope, AstStatDeclareClass* declaredClass)
 {
-    std::optional<TypeId> superTy = FFlag::LuauNegatedClassTypes ? std::make_optional(builtinTypes->classType) : std::nullopt;
+    std::optional<TypeId> superTy = std::make_optional(builtinTypes->classType);
     if (declaredClass->superName)
     {
         Name superName = Name(declaredClass->superName->value);
@@ -969,7 +1130,7 @@ void ConstraintGraphBuilder::visit(const ScopePtr& scope, AstStatDeclareClass* d
         if (!lookupType)
         {
             reportError(declaredClass->location, UnknownSymbol{superName, UnknownSymbol::Type});
-            return;
+            return ControlFlow::None;
         }
 
         // We don't have generic classes, so this assertion _should_ never be hit.
@@ -981,13 +1142,13 @@ void ConstraintGraphBuilder::visit(const ScopePtr& scope, AstStatDeclareClass* d
             reportError(declaredClass->location,
                 GenericError{format("Cannot use non-class type '%s' as a superclass of class '%s'", superName.c_str(), declaredClass->name.value)});
 
-            return;
+            return ControlFlow::None;
         }
     }
 
     Name className(declaredClass->name.value);
 
-    TypeId classTy = arena->addType(ClassType(className, {}, superTy, std::nullopt, {}, {}, moduleName));
+    TypeId classTy = arena->addType(ClassType(className, {}, superTy, std::nullopt, {}, {}, module->name));
     ClassType* ctv = getMutable<ClassType>(classTy);
 
     TypeId metaTy = arena->addType(TableType{TableState::Sealed, scope->level, scope.get()});
@@ -996,6 +1157,23 @@ void ConstraintGraphBuilder::visit(const ScopePtr& scope, AstStatDeclareClass* d
     ctv->metatable = metaTy;
 
     scope->exportedTypeBindings[className] = TypeFun{{}, classTy};
+
+    if (FFlag::LuauParseDeclareClassIndexer && declaredClass->indexer)
+    {
+        RecursionCounter counter{&recursionCount};
+
+        if (recursionCount >= FInt::LuauCheckRecursionLimit)
+        {
+            reportCodeTooComplex(declaredClass->indexer->location);
+        }
+        else
+        {
+            ctv->indexer = TableIndexer{
+                resolveType(scope, declaredClass->indexer->indexType, /* inTypeArguments */ false),
+                resolveType(scope, declaredClass->indexer->resultType, /* inTypeArguments */ false),
+            };
+        }
+    }
 
     for (const AstDeclaredClassProp& prop : declaredClass->props)
     {
@@ -1026,7 +1204,7 @@ void ConstraintGraphBuilder::visit(const ScopePtr& scope, AstStatDeclareClass* d
         }
         else
         {
-            TypeId currentTy = assignToMetatable ? metatable->props[propName].type : ctv->props[propName].type;
+            TypeId currentTy = assignToMetatable ? metatable->props[propName].type() : ctv->props[propName].type();
 
             // We special-case this logic to keep the intersection flat; otherwise we
             // would create a ton of nested intersection types.
@@ -1056,9 +1234,11 @@ void ConstraintGraphBuilder::visit(const ScopePtr& scope, AstStatDeclareClass* d
             }
         }
     }
+
+    return ControlFlow::None;
 }
 
-void ConstraintGraphBuilder::visit(const ScopePtr& scope, AstStatDeclareFunction* global)
+ControlFlow ConstraintGraphBuilder::visit(const ScopePtr& scope, AstStatDeclareFunction* global)
 {
     std::vector<std::pair<Name, GenericTypeDefinition>> generics = createGenerics(scope, global->generics);
     std::vector<std::pair<Name, GenericTypePackDefinition>> genericPacks = createGenericPacks(scope, global->genericPacks);
@@ -1097,14 +1277,18 @@ void ConstraintGraphBuilder::visit(const ScopePtr& scope, AstStatDeclareFunction
 
     BreadcrumbId bc = dfg->getBreadcrumb(global);
     rootScope->dcrRefinements[bc->def] = fnType;
+
+    return ControlFlow::None;
 }
 
-void ConstraintGraphBuilder::visit(const ScopePtr& scope, AstStatError* error)
+ControlFlow ConstraintGraphBuilder::visit(const ScopePtr& scope, AstStatError* error)
 {
     for (AstStat* stat : error->statements)
         visit(scope, stat);
     for (AstExpr* expr : error->expressions)
         check(scope, expr);
+
+    return ControlFlow::None;
 }
 
 InferencePack ConstraintGraphBuilder::checkPack(
@@ -1121,7 +1305,7 @@ InferencePack ConstraintGraphBuilder::checkPack(
             std::optional<TypeId> expectedType;
             if (i < expectedTypes.size())
                 expectedType = expectedTypes[i];
-            head.push_back(check(scope, expr, expectedType).ty);
+            head.push_back(check(scope, expr, ValueContext::RValue, expectedType).ty);
         }
         else
         {
@@ -1164,7 +1348,7 @@ InferencePack ConstraintGraphBuilder::checkPack(const ScopePtr& scope, AstExpr* 
         std::optional<TypeId> expectedType;
         if (!expectedTypes.empty())
             expectedType = expectedTypes[0];
-        TypeId t = check(scope, expr, expectedType).ty;
+        TypeId t = check(scope, expr, ValueContext::RValue, expectedType).ty;
         result = InferencePack{arena->addTypePack({t})};
     }
 
@@ -1271,7 +1455,7 @@ InferencePack ConstraintGraphBuilder::checkPack(const ScopePtr& scope, AstExprCa
         }
         else if (i < exprArgs.size() - 1 || !(arg->is<AstExprCall>() || arg->is<AstExprVarargs>()))
         {
-            auto [ty, refinement] = check(scope, arg, expectedType);
+            auto [ty, refinement] = check(scope, arg, ValueContext::RValue, expectedType);
             args.push_back(ty);
             argumentRefinements.push_back(refinement);
         }
@@ -1297,10 +1481,34 @@ InferencePack ConstraintGraphBuilder::checkPack(const ScopePtr& scope, AstExprCa
         if (argTail && args.size() < 2)
             argTailPack = extendTypePack(*arena, builtinTypes, *argTail, 2 - args.size());
 
-        LUAU_ASSERT(args.size() + argTailPack.head.size() == 2);
+        TypeId target = nullptr;
+        TypeId mt = nullptr;
 
-        TypeId target = args.size() > 0 ? args[0] : argTailPack.head[0];
-        TypeId mt = args.size() > 1 ? args[1] : argTailPack.head[args.size() == 0 ? 1 : 0];
+        if (args.size() + argTailPack.head.size() == 2)
+        {
+            target = args.size() > 0 ? args[0] : argTailPack.head[0];
+            mt = args.size() > 1 ? args[1] : argTailPack.head[args.size() == 0 ? 1 : 0];
+        }
+        else
+        {
+            std::vector<TypeId> unpackedTypes;
+            if (args.size() > 0)
+                target = args[0];
+            else
+            {
+                target = arena->addType(BlockedType{});
+                unpackedTypes.emplace_back(target);
+            }
+
+            mt = arena->addType(BlockedType{});
+            unpackedTypes.emplace_back(mt);
+            TypePackId mtPack = arena->addTypePack(std::move(unpackedTypes));
+
+            addConstraint(scope, call->location, UnpackConstraint{mtPack, *argTail});
+        }
+
+        LUAU_ASSERT(target);
+        LUAU_ASSERT(mt);
 
         AstExpr* targetExpr = call->args.data[0];
 
@@ -1334,6 +1542,8 @@ InferencePack ConstraintGraphBuilder::checkPack(const ScopePtr& scope, AstExprCa
                 rets,
                 call,
                 std::move(discriminantTypes),
+                &module->astOriginalCallTypes,
+                &module->astOverloadResolvedTypes,
             });
 
         // We force constraints produced by checking function arguments to wait
@@ -1349,7 +1559,8 @@ InferencePack ConstraintGraphBuilder::checkPack(const ScopePtr& scope, AstExprCa
     }
 }
 
-Inference ConstraintGraphBuilder::check(const ScopePtr& scope, AstExpr* expr, std::optional<TypeId> expectedType, bool forceSingleton)
+Inference ConstraintGraphBuilder::check(
+    const ScopePtr& scope, AstExpr* expr, ValueContext context, std::optional<TypeId> expectedType, bool forceSingleton)
 {
     RecursionCounter counter{&recursionCount};
 
@@ -1362,7 +1573,7 @@ Inference ConstraintGraphBuilder::check(const ScopePtr& scope, AstExpr* expr, st
     Inference result;
 
     if (auto group = expr->as<AstExprGroup>())
-        result = check(scope, group->expr, expectedType, forceSingleton);
+        result = check(scope, group->expr, ValueContext::RValue, expectedType, forceSingleton);
     else if (auto stringExpr = expr->as<AstExprConstantString>())
         result = check(scope, stringExpr, expectedType, forceSingleton);
     else if (expr->is<AstExprConstantNumber>())
@@ -1372,7 +1583,7 @@ Inference ConstraintGraphBuilder::check(const ScopePtr& scope, AstExpr* expr, st
     else if (expr->is<AstExprConstantNil>())
         result = Inference{builtinTypes->nilType};
     else if (auto local = expr->as<AstExprLocal>())
-        result = check(scope, local);
+        result = check(scope, local, context);
     else if (auto global = expr->as<AstExprGlobal>())
         result = check(scope, global);
     else if (expr->is<AstExprVarargs>())
@@ -1380,21 +1591,7 @@ Inference ConstraintGraphBuilder::check(const ScopePtr& scope, AstExpr* expr, st
     else if (auto call = expr->as<AstExprCall>())
         result = flattenPack(scope, expr->location, checkPack(scope, call)); // TODO: needs predicates too
     else if (auto a = expr->as<AstExprFunction>())
-    {
-        Checkpoint startCheckpoint = checkpoint(this);
-        FunctionSignature sig = checkFunctionSignature(scope, a, expectedType);
-        checkFunctionBody(sig.bodyScope, a);
-        Checkpoint endCheckpoint = checkpoint(this);
-
-        TypeId generalizedTy = arena->addType(BlockedType{});
-        NotNull<Constraint> gc = addConstraint(scope, expr->location, GeneralizationConstraint{generalizedTy, sig.signature});
-
-        forEachConstraint(startCheckpoint, endCheckpoint, this, [gc](const ConstraintPtr& constraint) {
-            gc->dependencies.emplace_back(constraint.get());
-        });
-
-        result = Inference{generalizedTy};
-    }
+        result = check(scope, a, expectedType);
     else if (auto indexName = expr->as<AstExprIndexName>())
         result = check(scope, indexName);
     else if (auto indexExpr = expr->as<AstExprIndexExpr>())
@@ -1481,11 +1678,11 @@ Inference ConstraintGraphBuilder::check(const ScopePtr& scope, AstExprConstantBo
     return Inference{builtinTypes->booleanType};
 }
 
-Inference ConstraintGraphBuilder::check(const ScopePtr& scope, AstExprLocal* local)
+Inference ConstraintGraphBuilder::check(const ScopePtr& scope, AstExprLocal* local, ValueContext context)
 {
     BreadcrumbId bc = dfg->getBreadcrumb(local);
 
-    if (auto ty = scope->lookup(bc->def))
+    if (auto ty = scope->lookup(bc->def); ty && context == ValueContext::RValue)
         return Inference{*ty, refinementArena.proposition(bc, builtinTypes->truthyType)};
     else if (auto ty = scope->lookup(local->local))
         return Inference{*ty, refinementArena.proposition(bc, builtinTypes->truthyType)};
@@ -1562,6 +1759,23 @@ Inference ConstraintGraphBuilder::check(const ScopePtr& scope, AstExprIndexExpr*
         return Inference{result};
 }
 
+Inference ConstraintGraphBuilder::check(const ScopePtr& scope, AstExprFunction* func, std::optional<TypeId> expectedType)
+{
+    Checkpoint startCheckpoint = checkpoint(this);
+    FunctionSignature sig = checkFunctionSignature(scope, func, expectedType);
+    checkFunctionBody(sig.bodyScope, func);
+    Checkpoint endCheckpoint = checkpoint(this);
+
+    TypeId generalizedTy = arena->addType(BlockedType{});
+    NotNull<Constraint> gc = addConstraint(sig.signatureScope, func->location, GeneralizationConstraint{generalizedTy, sig.signature});
+
+    forEachConstraint(startCheckpoint, endCheckpoint, this, [gc](const ConstraintPtr& constraint) {
+        gc->dependencies.emplace_back(constraint.get());
+    });
+
+    return Inference{generalizedTy};
+}
+
 Inference ConstraintGraphBuilder::check(const ScopePtr& scope, AstExprUnary* unary)
 {
     auto [operandType, refinement] = check(scope, unary->expr);
@@ -1578,6 +1792,17 @@ Inference ConstraintGraphBuilder::check(const ScopePtr& scope, AstExprBinary* bi
 {
     auto [leftType, rightType, refinement] = checkBinary(scope, binary, expectedType);
 
+    if (binary->op == AstExprBinary::Op::Add)
+    {
+        TypeId resultType = arena->addType(TypeFamilyInstanceType{
+            NotNull{&kBuiltinTypeFamilies.addFamily},
+            {leftType, rightType},
+            {},
+        });
+        addConstraint(scope, binary->location, ReduceConstraint{resultType});
+        return Inference{resultType, std::move(refinement)};
+    }
+
     TypeId resultType = arena->addType(BlockedType{});
     addConstraint(scope, binary->location,
         BinaryConstraint{binary->op, leftType, rightType, resultType, binary, &module->astOriginalCallTypes, &module->astOverloadResolvedTypes});
@@ -1591,18 +1816,18 @@ Inference ConstraintGraphBuilder::check(const ScopePtr& scope, AstExprIfElse* if
 
     ScopePtr thenScope = childScope(ifElse->trueExpr, scope);
     applyRefinements(thenScope, ifElse->trueExpr->location, refinement);
-    TypeId thenType = check(thenScope, ifElse->trueExpr, expectedType).ty;
+    TypeId thenType = check(thenScope, ifElse->trueExpr, ValueContext::RValue, expectedType).ty;
 
     ScopePtr elseScope = childScope(ifElse->falseExpr, scope);
     applyRefinements(elseScope, ifElse->falseExpr->location, refinementArena.negation(refinement));
-    TypeId elseType = check(elseScope, ifElse->falseExpr, expectedType).ty;
+    TypeId elseType = check(elseScope, ifElse->falseExpr, ValueContext::RValue, expectedType).ty;
 
-    return Inference{expectedType ? *expectedType : arena->addType(UnionType{{thenType, elseType}})};
+    return Inference{expectedType ? *expectedType : simplifyUnion(builtinTypes, arena, thenType, elseType).result};
 }
 
 Inference ConstraintGraphBuilder::check(const ScopePtr& scope, AstExprTypeAssertion* typeAssert)
 {
-    check(scope, typeAssert->expr, std::nullopt);
+    check(scope, typeAssert->expr, ValueContext::RValue, std::nullopt);
     return Inference{resolveType(scope, typeAssert->annotation, /* inTypeArguments */ false)};
 }
 
@@ -1619,21 +1844,31 @@ std::tuple<TypeId, TypeId, RefinementId> ConstraintGraphBuilder::checkBinary(
 {
     if (binary->op == AstExprBinary::And)
     {
-        auto [leftType, leftRefinement] = check(scope, binary->left, expectedType);
+        std::optional<TypeId> relaxedExpectedLhs;
+
+        if (expectedType)
+            relaxedExpectedLhs = arena->addType(UnionType{{builtinTypes->falsyType, *expectedType}});
+
+        auto [leftType, leftRefinement] = check(scope, binary->left, ValueContext::RValue, relaxedExpectedLhs);
 
         ScopePtr rightScope = childScope(binary->right, scope);
         applyRefinements(rightScope, binary->right->location, leftRefinement);
-        auto [rightType, rightRefinement] = check(rightScope, binary->right, expectedType);
+        auto [rightType, rightRefinement] = check(rightScope, binary->right, ValueContext::RValue, expectedType);
 
         return {leftType, rightType, refinementArena.conjunction(leftRefinement, rightRefinement)};
     }
     else if (binary->op == AstExprBinary::Or)
     {
-        auto [leftType, leftRefinement] = check(scope, binary->left, expectedType);
+        std::optional<TypeId> relaxedExpectedLhs;
+
+        if (expectedType)
+            relaxedExpectedLhs = arena->addType(UnionType{{builtinTypes->falsyType, *expectedType}});
+
+        auto [leftType, leftRefinement] = check(scope, binary->left, ValueContext::RValue, relaxedExpectedLhs);
 
         ScopePtr rightScope = childScope(binary->right, scope);
         applyRefinements(rightScope, binary->right->location, refinementArena.negation(leftRefinement));
-        auto [rightType, rightRefinement] = check(rightScope, binary->right, expectedType);
+        auto [rightType, rightRefinement] = check(rightScope, binary->right, ValueContext::RValue, expectedType);
 
         return {leftType, rightType, refinementArena.disjunction(leftRefinement, rightRefinement)};
     }
@@ -1675,7 +1910,7 @@ std::tuple<TypeId, TypeId, RefinementId> ConstraintGraphBuilder::checkBinary(
             TypeId ty = follow(typeFun->type);
 
             // We're only interested in the root class of any classes.
-            if (auto ctv = get<ClassType>(ty); !ctv || (FFlag::LuauNegatedClassTypes ? (ctv->parent == builtinTypes->classType) : !ctv->parent))
+            if (auto ctv = get<ClassType>(ty); !ctv || ctv->parent == builtinTypes->classType)
                 discriminantTy = ty;
         }
 
@@ -1689,8 +1924,10 @@ std::tuple<TypeId, TypeId, RefinementId> ConstraintGraphBuilder::checkBinary(
     }
     else if (binary->op == AstExprBinary::CompareEq || binary->op == AstExprBinary::CompareNe)
     {
-        TypeId leftType = check(scope, binary->left, expectedType, true).ty;
-        TypeId rightType = check(scope, binary->right, expectedType, true).ty;
+        // We are checking a binary expression of the form a op b
+        // Just because a op b is epxected to return a bool, doesn't mean a, b are expected to be bools too
+        TypeId leftType = check(scope, binary->left, ValueContext::RValue, {}, true).ty;
+        TypeId rightType = check(scope, binary->right, ValueContext::RValue, {}, true).ty;
 
         RefinementId leftRefinement = nullptr;
         if (auto bc = dfg->getBreadcrumb(binary->left))
@@ -1710,8 +1947,8 @@ std::tuple<TypeId, TypeId, RefinementId> ConstraintGraphBuilder::checkBinary(
     }
     else
     {
-        TypeId leftType = check(scope, binary->left, expectedType).ty;
-        TypeId rightType = check(scope, binary->right, expectedType).ty;
+        TypeId leftType = check(scope, binary->left, ValueContext::RValue).ty;
+        TypeId rightType = check(scope, binary->right, ValueContext::RValue).ty;
         return {leftType, rightType, nullptr};
     }
 }
@@ -1774,7 +2011,7 @@ TypeId ConstraintGraphBuilder::checkLValue(const ScopePtr& scope, AstExpr* expr)
         return propType;
     }
     else if (!isIndexNameEquivalent(expr))
-        return check(scope, expr).ty;
+        return check(scope, expr, ValueContext::LValue).ty;
 
     Symbol sym;
     std::vector<std::string> segments;
@@ -1801,6 +2038,8 @@ TypeId ConstraintGraphBuilder::checkLValue(const ScopePtr& scope, AstExpr* expr)
         }
         else if (auto indexExpr = e->as<AstExprIndexExpr>())
         {
+            // We need to populate the type for the index value
+            check(scope, indexExpr->index, ValueContext::RValue);
             if (auto strIndex = indexExpr->index->as<AstExprConstantString>())
             {
                 segments.push_back(std::string(strIndex->value.data, strIndex->value.size));
@@ -1809,11 +2048,11 @@ TypeId ConstraintGraphBuilder::checkLValue(const ScopePtr& scope, AstExpr* expr)
             }
             else
             {
-                return check(scope, expr).ty;
+                return check(scope, expr, ValueContext::LValue).ty;
             }
         }
         else
-            return check(scope, expr).ty;
+            return check(scope, expr, ValueContext::LValue).ty;
     }
 
     LUAU_ASSERT(!segments.empty());
@@ -1823,7 +2062,7 @@ TypeId ConstraintGraphBuilder::checkLValue(const ScopePtr& scope, AstExpr* expr)
 
     auto lookupResult = scope->lookupEx(sym);
     if (!lookupResult)
-        return check(scope, expr).ty;
+        return check(scope, expr, ValueContext::LValue).ty;
     const auto [subjectBinding, symbolScope] = std::move(*lookupResult);
     TypeId subjectType = subjectBinding->typeId;
 
@@ -1917,11 +2156,11 @@ Inference ConstraintGraphBuilder::check(const ScopePtr& scope, AstExprTable* exp
                 else
                 {
                     expectedValueType = arena->addType(BlockedType{});
-                    addConstraint(scope, item.value->location, HasPropConstraint{*expectedValueType, *expectedType, stringKey->value.data});
+                    addConstraint(scope, item.value->location,
+                        HasPropConstraint{*expectedValueType, *expectedType, stringKey->value.data, /*suppressSimplification*/ true});
                 }
             }
         }
-
 
         // We'll resolve the expected index result type here with the following priority:
         // 1. Record table types - in which key, value pairs must be handled on a k,v pair basis.
@@ -1944,7 +2183,7 @@ Inference ConstraintGraphBuilder::check(const ScopePtr& scope, AstExprTable* exp
             checkExpectedIndexResultType = pinnedIndexResultType;
         }
 
-        TypeId itemTy = check(scope, item.value, checkExpectedIndexResultType).ty;
+        TypeId itemTy = check(scope, item.value, ValueContext::RValue, checkExpectedIndexResultType).ty;
 
         if (isIndexedResultType && !pinnedIndexResultType)
             pinnedIndexResultType = itemTy;
@@ -1954,7 +2193,7 @@ Inference ConstraintGraphBuilder::check(const ScopePtr& scope, AstExprTable* exp
             // Even though we don't need to use the type of the item's key if
             // it's a string constant, we still want to check it to populate
             // astTypes.
-            TypeId keyTy = check(scope, item.key, annotatedKeyType).ty;
+            TypeId keyTy = check(scope, item.key, ValueContext::RValue, annotatedKeyType).ty;
 
             if (AstExprConstantString* key = item.key->as<AstExprConstantString>())
             {
@@ -1978,7 +2217,7 @@ Inference ConstraintGraphBuilder::check(const ScopePtr& scope, AstExprTable* exp
 }
 
 ConstraintGraphBuilder::FunctionSignature ConstraintGraphBuilder::checkFunctionSignature(
-    const ScopePtr& parent, AstExprFunction* fn, std::optional<TypeId> expectedType)
+    const ScopePtr& parent, AstExprFunction* fn, std::optional<TypeId> expectedType, std::optional<Location> originalName)
 {
     ScopePtr signatureScope = nullptr;
     ScopePtr bodyScope = nullptr;
@@ -2028,6 +2267,19 @@ ConstraintGraphBuilder::FunctionSignature ConstraintGraphBuilder::checkFunctionS
     TypePack expectedArgPack;
 
     const FunctionType* expectedFunction = expectedType ? get<FunctionType>(*expectedType) : nullptr;
+    // This check ensures that expectedType is precisely optional and not any (since any is also an optional type)
+    if (expectedType && isOptional(*expectedType) && !get<AnyType>(*expectedType))
+    {
+        auto ut = get<UnionType>(*expectedType);
+        for (auto u : ut)
+        {
+            if (get<FunctionType>(u) && !isNil(u))
+            {
+                expectedFunction = get<FunctionType>(u);
+                break;
+            }
+        }
+    }
 
     if (expectedFunction)
     {
@@ -2121,11 +2373,17 @@ ConstraintGraphBuilder::FunctionSignature ConstraintGraphBuilder::checkFunctionS
     // TODO: Preserve argument names in the function's type.
 
     FunctionType actualFunction{TypeLevel{}, parent.get(), arena->addTypePack(argTypes, varargPack), returnType};
-    actualFunction.hasNoGenerics = !hasGenerics;
     actualFunction.generics = std::move(genericTypes);
     actualFunction.genericPacks = std::move(genericTypePacks);
     actualFunction.argNames = std::move(argNames);
     actualFunction.hasSelf = fn->self != nullptr;
+
+    FunctionDefinition defn;
+    defn.definitionModuleName = module->name;
+    defn.definitionLocation = fn->location;
+    defn.varargLocation = fn->vararg ? std::make_optional(fn->varargLocation) : std::nullopt;
+    defn.originalNameLocation = originalName.value_or(Location(fn->location.begin, 0));
+    actualFunction.definition = defn;
 
     TypeId actualFunctionType = arena->addType(std::move(actualFunction));
     LUAU_ASSERT(actualFunctionType);
@@ -2169,6 +2427,7 @@ TypeId ConstraintGraphBuilder::resolveType(const ScopePtr& scope, AstType* ty, b
                 if (ref->parameters.size != 1 || !ref->parameters.data[0].type)
                 {
                     reportError(ty->location, GenericError{"_luau_print requires one generic parameter"});
+                    module->astResolvedTypes[ty] = builtinTypes->errorRecoveryType();
                     return builtinTypes->errorRecoveryType();
                 }
                 else
@@ -2306,7 +2565,6 @@ TypeId ConstraintGraphBuilder::resolveType(const ScopePtr& scope, AstType* ty, b
 
         // This replicates the behavior of the appropriate FunctionType
         // constructors.
-        ftv.hasNoGenerics = !hasGenerics;
         ftv.generics = std::move(genericTypes);
         ftv.genericPacks = std::move(genericTypePacks);
 
@@ -2510,7 +2768,7 @@ Inference ConstraintGraphBuilder::flattenPack(const ScopePtr& scope, Location lo
 
 void ConstraintGraphBuilder::reportError(Location location, TypeErrorData err)
 {
-    errors.push_back(TypeError{location, moduleName, std::move(err)});
+    errors.push_back(TypeError{location, module->name, std::move(err)});
 
     if (logger)
         logger->captureGenerationError(errors.back());
@@ -2518,7 +2776,7 @@ void ConstraintGraphBuilder::reportError(Location location, TypeErrorData err)
 
 void ConstraintGraphBuilder::reportCodeTooComplex(Location location)
 {
-    errors.push_back(TypeError{location, moduleName, CodeTooComplex{}});
+    errors.push_back(TypeError{location, module->name, CodeTooComplex{}});
 
     if (logger)
         logger->captureGenerationError(errors.back());
@@ -2547,6 +2805,9 @@ struct GlobalPrepopulator : AstVisitor
 void ConstraintGraphBuilder::prepopulateGlobalScope(const ScopePtr& globalScope, AstStatBlock* program)
 {
     GlobalPrepopulator gp{NotNull{globalScope.get()}, arena};
+
+    if (prepareModuleScope)
+        prepareModuleScope(module->name, globalScope);
 
     program->visit(&gp);
 }

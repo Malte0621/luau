@@ -28,6 +28,18 @@ struct IsSubtypeFixture : Fixture
 
         return ::Luau::isSubtype(a, b, NotNull{module->getModuleScope().get()}, builtinTypes, ice);
     }
+
+    bool isConsistentSubtype(TypeId a, TypeId b)
+    {
+        Location location;
+        ModulePtr module = getMainModule();
+        REQUIRE(module);
+
+        if (!module->hasModuleScope())
+            FAIL("isSubtype: module scope data is not available");
+
+        return ::Luau::isConsistentSubtype(a, b, NotNull{module->getModuleScope().get()}, builtinTypes, ice);
+    }
 };
 } // namespace
 
@@ -86,8 +98,8 @@ TEST_CASE_FIXTURE(IsSubtypeFixture, "functions_and_any")
 
     // any makes things work even when it makes no sense.
 
-    CHECK(isSubtype(b, a));
-    CHECK(isSubtype(a, b));
+    CHECK(isConsistentSubtype(b, a));
+    CHECK(isConsistentSubtype(a, b));
 }
 
 TEST_CASE_FIXTURE(IsSubtypeFixture, "variadic_functions_with_no_head")
@@ -163,6 +175,10 @@ TEST_CASE_FIXTURE(IsSubtypeFixture, "table_with_union_prop")
 
 TEST_CASE_FIXTURE(IsSubtypeFixture, "table_with_any_prop")
 {
+    ScopedFastFlag sffs[] = {
+        {"LuauTransitiveSubtyping", true},
+    };
+
     check(R"(
         local a: {x: number}
         local b: {x: any}
@@ -172,7 +188,8 @@ TEST_CASE_FIXTURE(IsSubtypeFixture, "table_with_any_prop")
     TypeId b = requireType("b");
 
     CHECK(isSubtype(a, b));
-    CHECK(isSubtype(b, a));
+    CHECK(!isSubtype(b, a));
+    CHECK(isConsistentSubtype(b, a));
 }
 
 TEST_CASE_FIXTURE(IsSubtypeFixture, "intersection")
@@ -216,6 +233,10 @@ TEST_CASE_FIXTURE(IsSubtypeFixture, "union_and_intersection")
 
 TEST_CASE_FIXTURE(IsSubtypeFixture, "tables")
 {
+    ScopedFastFlag sffs[] = {
+        {"LuauTransitiveSubtyping", true},
+    };
+
     check(R"(
         local a: {x: number}
         local b: {x: any}
@@ -229,7 +250,8 @@ TEST_CASE_FIXTURE(IsSubtypeFixture, "tables")
     TypeId d = requireType("d");
 
     CHECK(isSubtype(a, b));
-    CHECK(isSubtype(b, a));
+    CHECK(!isSubtype(b, a));
+    CHECK(isConsistentSubtype(b, a));
 
     CHECK(!isSubtype(c, a));
     CHECK(!isSubtype(a, c));
@@ -358,13 +380,96 @@ TEST_CASE_FIXTURE(IsSubtypeFixture, "metatable" * doctest::expected_failures{1})
 }
 #endif
 
+TEST_CASE_FIXTURE(IsSubtypeFixture, "any_is_unknown_union_error")
+{
+    ScopedFastFlag sffs[] = {
+        {"LuauTransitiveSubtyping", true},
+    };
+
+    check(R"(
+        local err = 5.nope.nope -- err is now an error type
+        local a : any
+        local b : (unknown | typeof(err))
+    )");
+
+    TypeId a = requireType("a");
+    TypeId b = requireType("b");
+
+    CHECK(isSubtype(a, b));
+    CHECK(isSubtype(b, a));
+    CHECK_EQ("*error-type*", toString(requireType("err")));
+}
+
+TEST_CASE_FIXTURE(IsSubtypeFixture, "any_intersect_T_is_T")
+{
+    ScopedFastFlag sffs[] = {
+        {"LuauTransitiveSubtyping", true},
+    };
+
+    check(R"(
+        local a : (any & string)
+        local b : string
+        local c : number
+    )");
+
+    TypeId a = requireType("a");
+    TypeId b = requireType("b");
+    TypeId c = requireType("c");
+
+    CHECK(isSubtype(a, b));
+    CHECK(isSubtype(b, a));
+    CHECK(!isSubtype(a, c));
+    CHECK(!isSubtype(c, a));
+}
+
+TEST_CASE_FIXTURE(IsSubtypeFixture, "error_suppression")
+{
+    ScopedFastFlag sffs[] = {
+        {"LuauTransitiveSubtyping", true},
+    };
+
+    check("");
+
+    TypeId any = builtinTypes->anyType;
+    TypeId err = builtinTypes->errorType;
+    TypeId str = builtinTypes->stringType;
+    TypeId unk = builtinTypes->unknownType;
+
+    CHECK(!isSubtype(any, err));
+    CHECK(isSubtype(err, any));
+    CHECK(isConsistentSubtype(any, err));
+    CHECK(isConsistentSubtype(err, any));
+
+    CHECK(!isSubtype(any, str));
+    CHECK(isSubtype(str, any));
+    CHECK(isConsistentSubtype(any, str));
+    CHECK(isConsistentSubtype(str, any));
+
+    CHECK(!isSubtype(any, unk));
+    CHECK(isSubtype(unk, any));
+    CHECK(isConsistentSubtype(any, unk));
+    CHECK(isConsistentSubtype(unk, any));
+
+    CHECK(!isSubtype(err, str));
+    CHECK(!isSubtype(str, err));
+    CHECK(isConsistentSubtype(err, str));
+    CHECK(isConsistentSubtype(str, err));
+
+    CHECK(!isSubtype(err, unk));
+    CHECK(!isSubtype(unk, err));
+    CHECK(isConsistentSubtype(err, unk));
+    CHECK(isConsistentSubtype(unk, err));
+
+    CHECK(isSubtype(str, unk));
+    CHECK(!isSubtype(unk, str));
+    CHECK(isConsistentSubtype(str, unk));
+    CHECK(!isConsistentSubtype(unk, str));
+}
+
 TEST_SUITE_END();
 
 struct NormalizeFixture : Fixture
 {
-    ScopedFastFlag sff1{"LuauNegatedFunctionTypes", true};
-    ScopedFastFlag sff2{"LuauNegatedClassTypes", true};
-
     TypeArena arena;
     InternalErrorReporter iceHandler;
     UnifierSharedState unifierState{&iceHandler};
@@ -389,7 +494,7 @@ struct NormalizeFixture : Fixture
             REQUIRE(node);
             AstStatTypeAlias* alias = node->as<AstStatTypeAlias>();
             REQUIRE(alias);
-            TypeId* originalTy = getMainModule()->astOriginalResolvedTypes.find(alias->type);
+            TypeId* originalTy = getMainModule()->astResolvedTypes.find(alias->type);
             REQUIRE(originalTy);
             return normalizer.normalize(*originalTy);
         }
@@ -525,11 +630,6 @@ TEST_CASE_FIXTURE(NormalizeFixture, "union_function_and_top_function")
 
 TEST_CASE_FIXTURE(NormalizeFixture, "negated_function_is_anything_except_a_function")
 {
-    ScopedFastFlag sffs[] = {
-        {"LuauNegatedTableTypes", true},
-        {"LuauNegatedClassTypes", true},
-    };
-
     CHECK("(boolean | class | number | string | table | thread)?" == toString(normal(R"(
         Not<fun>
     )")));
@@ -542,11 +642,6 @@ TEST_CASE_FIXTURE(NormalizeFixture, "specific_functions_cannot_be_negated")
 
 TEST_CASE_FIXTURE(NormalizeFixture, "bare_negated_boolean")
 {
-    ScopedFastFlag sffs[] = {
-        {"LuauNegatedTableTypes", true},
-        {"LuauNegatedClassTypes", true},
-    };
-
     // TODO: We don't yet have a way to say number | string | thread | nil | Class | Table | Function
     CHECK("(class | function | number | string | table | thread)?" == toString(normal(R"(
         Not<boolean>
@@ -616,8 +711,6 @@ export type t0 = (((any)&({_:l0.t0,n0:t0,_G:any,}))&({_:any,}))&(((any)&({_:l0.t
 
 TEST_CASE_FIXTURE(NormalizeFixture, "unions_of_classes")
 {
-    ScopedFastFlag sff{"LuauNegatedClassTypes", true};
-
     createSomeClasses(&frontend);
     CHECK("Parent | Unrelated" == toString(normal("Parent | Unrelated")));
     CHECK("Parent" == toString(normal("Parent | Child")));
@@ -626,8 +719,6 @@ TEST_CASE_FIXTURE(NormalizeFixture, "unions_of_classes")
 
 TEST_CASE_FIXTURE(NormalizeFixture, "intersections_of_classes")
 {
-    ScopedFastFlag sff{"LuauNegatedClassTypes", true};
-
     createSomeClasses(&frontend);
     CHECK("Child" == toString(normal("Parent & Child")));
     CHECK("never" == toString(normal("Child & Unrelated")));
@@ -635,19 +726,22 @@ TEST_CASE_FIXTURE(NormalizeFixture, "intersections_of_classes")
 
 TEST_CASE_FIXTURE(NormalizeFixture, "narrow_union_of_classes_with_intersection")
 {
-    ScopedFastFlag sff{"LuauNegatedClassTypes", true};
-
     createSomeClasses(&frontend);
     CHECK("Child" == toString(normal("(Child | Unrelated) & Child")));
 }
 
+TEST_CASE_FIXTURE(NormalizeFixture, "intersection_of_metatables_where_the_metatable_is_top_or_bottom")
+{
+    CHECK("{ @metatable *error-type*, {|  |} }" == toString(normal("Mt<{}, any> & Mt<{}, err>")));
+}
+
+TEST_CASE_FIXTURE(NormalizeFixture, "crazy_metatable")
+{
+    CHECK("never" == toString(normal("Mt<{}, number> & Mt<{}, string>")));
+}
+
 TEST_CASE_FIXTURE(NormalizeFixture, "negations_of_classes")
 {
-    ScopedFastFlag sffs[] = {
-        {"LuauNegatedTableTypes", true},
-        {"LuauNegatedClassTypes", true},
-    };
-
     createSomeClasses(&frontend);
     CHECK("(Parent & ~Child) | Unrelated" == toString(normal("(Parent & Not<Child>) | Unrelated")));
     CHECK("((class & ~Child) | boolean | function | number | string | table | thread)?" == toString(normal("Not<Child>")));
@@ -660,24 +754,18 @@ TEST_CASE_FIXTURE(NormalizeFixture, "negations_of_classes")
 
 TEST_CASE_FIXTURE(NormalizeFixture, "classes_and_unknown")
 {
-    ScopedFastFlag sff{"LuauNegatedClassTypes", true};
-
     createSomeClasses(&frontend);
     CHECK("Parent" == toString(normal("Parent & unknown")));
 }
 
 TEST_CASE_FIXTURE(NormalizeFixture, "classes_and_never")
 {
-    ScopedFastFlag sff{"LuauNegatedClassTypes", true};
-
     createSomeClasses(&frontend);
     CHECK("never" == toString(normal("Parent & never")));
 }
 
 TEST_CASE_FIXTURE(NormalizeFixture, "top_table_type")
 {
-    ScopedFastFlag sff{"LuauNegatedTableTypes", true};
-
     CHECK("table" == toString(normal("{} | tbl")));
     CHECK("{|  |}" == toString(normal("{} & tbl")));
     CHECK("never" == toString(normal("number & tbl")));
@@ -685,11 +773,39 @@ TEST_CASE_FIXTURE(NormalizeFixture, "top_table_type")
 
 TEST_CASE_FIXTURE(NormalizeFixture, "negations_of_tables")
 {
-    ScopedFastFlag sff{"LuauNegatedTableTypes", true};
-
     CHECK(nullptr == toNormalizedType("Not<{}>"));
     CHECK("(boolean | class | function | number | string | thread)?" == toString(normal("Not<tbl>")));
     CHECK("table" == toString(normal("Not<Not<tbl>>")));
+}
+
+TEST_CASE_FIXTURE(NormalizeFixture, "normalize_blocked_types")
+{
+    ScopedFastFlag sff[]{
+        {"LuauNormalizeBlockedTypes", true},
+    };
+
+    Type blocked{BlockedType{}};
+
+    const NormalizedType* norm = normalizer.normalize(&blocked);
+
+    CHECK_EQ(normalizer.typeFromNormal(*norm), &blocked);
+}
+
+TEST_CASE_FIXTURE(NormalizeFixture, "normalize_is_exactly_number")
+{
+    const NormalizedType* number = normalizer.normalize(builtinTypes->numberType);
+    // 1. all types for which Types::number say true for, NormalizedType::isExactlyNumber should say true as well
+    CHECK(Luau::isNumber(builtinTypes->numberType) == number->isExactlyNumber());
+    // 2. isExactlyNumber should handle cases like `number & number`
+    TypeId intersection = arena.addType(IntersectionType{{builtinTypes->numberType, builtinTypes->numberType}});
+    const NormalizedType* normIntersection = normalizer.normalize(intersection);
+    CHECK(normIntersection->isExactlyNumber());
+
+    // 3. isExactlyNumber should reject things that are definitely not precisely numbers `number | any`
+
+    TypeId yoonion = arena.addType(UnionType{{builtinTypes->anyType, builtinTypes->numberType}});
+    const NormalizedType* unionIntersection = normalizer.normalize(yoonion);
+    CHECK(!unionIntersection->isExactlyNumber());
 }
 
 TEST_SUITE_END();

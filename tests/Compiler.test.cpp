@@ -49,6 +49,15 @@ static std::string compileFunction0Coverage(const char* source, int level)
     return bcb.dumpFunction(0);
 }
 
+static std::string compileFunction0TypeTable(const char* source)
+{
+    Luau::BytecodeBuilder bcb;
+    bcb.setDumpFlags(Luau::BytecodeBuilder::Dump_Code);
+    Luau::compileOrThrow(bcb, source);
+
+    return bcb.dumpTypeInfo();
+}
+
 TEST_SUITE_BEGIN("Compiler");
 
 TEST_CASE("CompileToBytecode")
@@ -1677,8 +1686,6 @@ RETURN R0 0
 
 TEST_CASE("LoopBreak")
 {
-    ScopedFastFlag sff("LuauCompileTerminateBC", true);
-
     // default codegen: compile breaks as unconditional jumps
     CHECK_EQ("\n" + compileFunction0("while true do if math.random() < 0.5 then break else end end"), R"(
 L0: GETIMPORT R0 2 [math.random]
@@ -1703,8 +1710,6 @@ L1: RETURN R0 0
 
 TEST_CASE("LoopContinue")
 {
-    ScopedFastFlag sff("LuauCompileTerminateBC", true);
-
     // default codegen: compile continue as unconditional jumps
     CHECK_EQ("\n" + compileFunction0("repeat if math.random() < 0.5 then continue else end break until false error()"), R"(
 L0: GETIMPORT R0 2 [math.random]
@@ -2213,6 +2218,46 @@ TEST_CASE("RecursionParse")
     catch (std::exception& e)
     {
         CHECK_EQ(std::string(e.what()), "Exceeded allowed recursion depth; simplify your block to make the code compile");
+    }
+
+    try
+    {
+        Luau::compileOrThrow(bcb, "local f: " + rep("(", 1500) + "nil" + rep(")", 1500));
+        CHECK(!"Expected exception");
+    }
+    catch (std::exception& e)
+    {
+        CHECK_EQ(std::string(e.what()), "Exceeded allowed recursion depth; simplify your type annotation to make the code compile");
+    }
+
+    try
+    {
+        Luau::compileOrThrow(bcb, "local f: () " + rep("-> ()", 1500));
+        CHECK(!"Expected exception");
+    }
+    catch (std::exception& e)
+    {
+        CHECK_EQ(std::string(e.what()), "Exceeded allowed recursion depth; simplify your type annotation to make the code compile");
+    }
+
+    try
+    {
+        Luau::compileOrThrow(bcb, "local f: " + rep("{x:", 1500) + "nil" + rep("}", 1500));
+        CHECK(!"Expected exception");
+    }
+    catch (std::exception& e)
+    {
+        CHECK_EQ(std::string(e.what()), "Exceeded allowed recursion depth; simplify your type annotation to make the code compile");
+    }
+
+    try
+    {
+        Luau::compileOrThrow(bcb, "local f: " + rep("(nil & ", 1500) + "nil" + rep(")", 1500));
+        CHECK(!"Expected exception");
+    }
+    catch (std::exception& e)
+    {
+        CHECK_EQ(std::string(e.what()), "Exceeded allowed recursion depth; simplify your type annotation to make the code compile");
     }
 }
 
@@ -4655,8 +4700,6 @@ RETURN R0 0
 
 TEST_CASE("LoopUnrollCost")
 {
-    ScopedFastFlag sff("LuauCompileBuiltinArity", true);
-
     ScopedFastInt sfis[] = {
         {"LuauCompileLoopUnrollThreshold", 25},
         {"LuauCompileLoopUnrollThresholdMaxBoost", 300},
@@ -5762,7 +5805,7 @@ RETURN R3 1
 
 TEST_CASE("InlineRecurseArguments")
 {
-    // we can't inline a function if it's used to compute its own arguments
+    // the example looks silly but we preserve it verbatim as it was found by fuzzer for a previous version of the compiler
     CHECK_EQ("\n" + compileFunction(R"(
 local function foo(a, b)
 end
@@ -5771,15 +5814,82 @@ foo(foo(foo,foo(foo,foo))[foo])
                         1, 2),
         R"(
 DUPCLOSURE R0 K0 ['foo']
-MOVE R2 R0
-MOVE R3 R0
-MOVE R4 R0
-MOVE R5 R0
-MOVE R6 R0
-CALL R4 2 -1
-CALL R2 -1 1
+LOADNIL R3
+LOADNIL R2
 GETTABLE R1 R2 R0
 RETURN R0 0
+)");
+
+    // verify that invocations of the inlined function in any position for computing the arguments to itself compile
+    CHECK_EQ("\n" + compileFunction(R"(
+local function foo(a, b)
+    return a + b
+end
+
+local x, y, z = ...
+
+return foo(foo(x, y), foo(z, 1))
+)",
+                        1, 2),
+        R"(
+DUPCLOSURE R0 K0 ['foo']
+GETVARARGS R1 3
+ADD R5 R1 R2
+ADDK R6 R3 K1 [1]
+ADD R4 R5 R6
+RETURN R4 1
+)");
+
+    // verify that invocations of the inlined function in any position for computing the arguments to itself compile, including constants and locals
+    // note that foo(k1, k2) doesn't get constant folded, so there's still actual math emitted for some of the calls below
+    CHECK_EQ("\n" + compileFunction(R"(
+local function foo(a, b)
+    return a + b
+end
+
+local x, y, z = ...
+
+return
+    foo(foo(1, 2), 3),
+    foo(1, foo(2, 3)),
+    foo(x, foo(2, 3)),
+    foo(x, foo(y, 3)),
+    foo(x, foo(y, z)),
+    foo(x+0, foo(y, z)),
+    foo(x+0, foo(y+0, z)),
+    foo(x+0, foo(y, z+0)),
+    foo(1, foo(x, y))
+)",
+                        1, 2),
+        R"(
+DUPCLOSURE R0 K0 ['foo']
+GETVARARGS R1 3
+LOADN R5 3
+ADDK R4 R5 K1 [3]
+LOADN R6 5
+LOADN R7 1
+ADD R5 R7 R6
+LOADN R7 5
+ADD R6 R1 R7
+ADDK R8 R2 K1 [3]
+ADD R7 R1 R8
+ADD R9 R2 R3
+ADD R8 R1 R9
+ADDK R10 R1 K2 [0]
+ADD R11 R2 R3
+ADD R9 R10 R11
+ADDK R11 R1 K2 [0]
+ADDK R13 R2 K2 [0]
+ADD R12 R13 R3
+ADD R10 R11 R12
+ADDK R12 R1 K2 [0]
+ADDK R14 R3 K2 [0]
+ADD R13 R2 R14
+ADD R11 R12 R13
+ADD R13 R1 R2
+LOADN R14 1
+ADD R12 R14 R13
+RETURN R4 9
 )");
 }
 
@@ -5926,8 +6036,6 @@ RETURN R2 1
 
 TEST_CASE("InlineMultret")
 {
-    ScopedFastFlag sff("LuauCompileBuiltinArity", true);
-
     // inlining a function in multret context is prohibited since we can't adjust L->top outside of CALL/GETVARARGS
     CHECK_EQ("\n" + compileFunction(R"(
 local function foo(a)
@@ -6265,8 +6373,6 @@ RETURN R0 52
 
 TEST_CASE("BuiltinFoldingProhibited")
 {
-    ScopedFastFlag sff("LuauCompileBuiltinArity", true);
-
     CHECK_EQ("\n" + compileFunction(R"(
 return
     math.abs(),
@@ -6816,8 +6922,6 @@ RETURN R0 0
 
 TEST_CASE("ElideJumpAfterIf")
 {
-    ScopedFastFlag sff("LuauCompileTerminateBC", true);
-
     // break refers to outer loop => we can elide unconditional branches
     CHECK_EQ("\n" + compileFunction0(R"(
 local foo, bar = ...
@@ -6871,8 +6975,6 @@ L3: RETURN R0 0
 
 TEST_CASE("BuiltinArity")
 {
-    ScopedFastFlag sff("LuauCompileBuiltinArity", true);
-
     // by default we can't assume that we know parameter/result count for builtins as they can be overridden at runtime
     CHECK_EQ("\n" + compileFunction(R"(
 return math.abs(unknown())
@@ -6973,6 +7075,58 @@ MOVE R5 R2
 GETIMPORT R3 1 [type]
 CALL R3 2 1
 L1: RETURN R3 1
+)");
+}
+
+TEST_CASE("EncodedTypeTable")
+{
+    ScopedFastFlag sffs[] = {
+        {"BytecodeVersion4", true},
+        {"CompileFunctionType", true},
+    };
+
+    CHECK_EQ("\n" + compileFunction0TypeTable(R"(
+function myfunc(test: string, num: number)
+    print(test)
+end
+
+function myfunc2(test: number?)
+end
+
+function myfunc3(test: string, n: number)
+end
+
+function myfunc4(test: string | number, n: number)
+end
+
+-- Promoted to function(any, any) since general unions are not supported.
+-- Functions with all `any` parameters will have omitted type info.
+function myfunc5(test: string | number, n: number | boolean)
+end
+
+myfunc('test')
+)"),
+        R"(
+0: function(string, number)
+1: function(number?)
+2: function(string, number)
+3: function(any, number)
+)");
+
+    CHECK_EQ("\n" + compileFunction0TypeTable(R"(
+local Str = {
+    a = 1
+}
+
+-- Implicit `self` parameter is automatically assumed to be table type.
+function Str:test(n: number)
+    print(self.a, n)
+end
+
+Str:test(234)
+)"),
+        R"(
+0: function({ }, number)
 )");
 }
 

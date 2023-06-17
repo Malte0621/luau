@@ -69,6 +69,9 @@ void updateLastUseLocations(IrFunction& function)
                 instructions[op.index].lastUse = uint32_t(instIdx);
         };
 
+        if (isPseudo(inst.cmd))
+            continue;
+
         checkOp(inst.a);
         checkOp(inst.b);
         checkOp(inst.c);
@@ -76,6 +79,42 @@ void updateLastUseLocations(IrFunction& function)
         checkOp(inst.e);
         checkOp(inst.f);
     }
+}
+
+uint32_t getNextInstUse(IrFunction& function, uint32_t targetInstIdx, uint32_t startInstIdx)
+{
+    LUAU_ASSERT(startInstIdx < function.instructions.size());
+    IrInst& targetInst = function.instructions[targetInstIdx];
+
+    for (uint32_t i = startInstIdx; i <= targetInst.lastUse; i++)
+    {
+        IrInst& inst = function.instructions[i];
+
+        if (isPseudo(inst.cmd))
+            continue;
+
+        if (inst.a.kind == IrOpKind::Inst && inst.a.index == targetInstIdx)
+            return i;
+
+        if (inst.b.kind == IrOpKind::Inst && inst.b.index == targetInstIdx)
+            return i;
+
+        if (inst.c.kind == IrOpKind::Inst && inst.c.index == targetInstIdx)
+            return i;
+
+        if (inst.d.kind == IrOpKind::Inst && inst.d.index == targetInstIdx)
+            return i;
+
+        if (inst.e.kind == IrOpKind::Inst && inst.e.index == targetInstIdx)
+            return i;
+
+        if (inst.f.kind == IrOpKind::Inst && inst.f.index == targetInstIdx)
+            return i;
+    }
+
+    // There must be a next use since there is the last use location
+    LUAU_ASSERT(!"Failed to find next use");
+    return targetInst.lastUse;
 }
 
 std::pair<uint32_t, uint32_t> getLiveInOutValueCount(IrFunction& function, IrBlock& block)
@@ -96,6 +135,9 @@ std::pair<uint32_t, uint32_t> getLiveInOutValueCount(IrFunction& function, IrBlo
     for (uint32_t instIdx = block.start; instIdx <= block.finish; instIdx++)
     {
         IrInst& inst = function.instructions[instIdx];
+
+        if (isPseudo(inst.cmd))
+            continue;
 
         liveOuts += inst.useCount;
 
@@ -120,10 +162,14 @@ uint32_t getLiveOutValueCount(IrFunction& function, IrBlock& block)
     return getLiveInOutValueCount(function, block).second;
 }
 
-static void requireVariadicSequence(RegisterSet& sourceRs, const RegisterSet& defRs, uint8_t varargStart)
+void requireVariadicSequence(RegisterSet& sourceRs, const RegisterSet& defRs, uint8_t varargStart)
 {
     if (!defRs.varargSeq)
     {
+        // Peel away registers from variadic sequence that we define
+        while (defRs.regs.test(varargStart))
+            varargStart++;
+
         LUAU_ASSERT(!sourceRs.varargSeq || sourceRs.varargStart == varargStart);
 
         sourceRs.varargSeq = true;
@@ -145,26 +191,24 @@ static RegisterSet computeBlockLiveInRegSet(IrFunction& function, const IrBlock&
     RegisterSet inRs;
 
     auto def = [&](IrOp op, int offset = 0) {
-        LUAU_ASSERT(op.kind == IrOpKind::VmReg);
-        defRs.regs.set(op.index + offset, true);
+        defRs.regs.set(vmRegOp(op) + offset, true);
     };
 
     auto use = [&](IrOp op, int offset = 0) {
-        LUAU_ASSERT(op.kind == IrOpKind::VmReg);
-        if (!defRs.regs.test(op.index + offset))
-            inRs.regs.set(op.index + offset, true);
+        if (!defRs.regs.test(vmRegOp(op) + offset))
+            inRs.regs.set(vmRegOp(op) + offset, true);
     };
 
     auto maybeDef = [&](IrOp op) {
         if (op.kind == IrOpKind::VmReg)
-            defRs.regs.set(op.index, true);
+            defRs.regs.set(vmRegOp(op), true);
     };
 
     auto maybeUse = [&](IrOp op) {
         if (op.kind == IrOpKind::VmReg)
         {
-            if (!defRs.regs.test(op.index))
-                inRs.regs.set(op.index, true);
+            if (!defRs.regs.test(vmRegOp(op)))
+                inRs.regs.set(vmRegOp(op), true);
         }
     };
 
@@ -226,6 +270,7 @@ static RegisterSet computeBlockLiveInRegSet(IrFunction& function, const IrBlock&
         case IrCmd::STORE_POINTER:
         case IrCmd::STORE_DOUBLE:
         case IrCmd::STORE_INT:
+        case IrCmd::STORE_VECTOR:
         case IrCmd::STORE_TVALUE:
             maybeDef(inst.a); // Argument can also be a pointer value
             break;
@@ -240,11 +285,15 @@ static RegisterSet computeBlockLiveInRegSet(IrFunction& function, const IrBlock&
             // A <- B, C
         case IrCmd::DO_ARITH:
         case IrCmd::GET_TABLE:
-        case IrCmd::SET_TABLE:
             use(inst.b);
             maybeUse(inst.c); // Argument can also be a VmConst
 
             def(inst.a);
+            break;
+        case IrCmd::SET_TABLE:
+            use(inst.a);
+            use(inst.b);
+            maybeUse(inst.c); // Argument can also be a VmConst
             break;
             // A <- B
         case IrCmd::DO_LEN:
@@ -256,9 +305,9 @@ static RegisterSet computeBlockLiveInRegSet(IrFunction& function, const IrBlock&
             def(inst.a);
             break;
         case IrCmd::CONCAT:
-            useRange(inst.a.index, function.uintOp(inst.b));
+            useRange(vmRegOp(inst.a), function.uintOp(inst.b));
 
-            defRange(inst.a.index, function.uintOp(inst.b));
+            defRange(vmRegOp(inst.a), function.uintOp(inst.b));
             break;
         case IrCmd::GET_UPVALUE:
             def(inst.a);
@@ -289,36 +338,33 @@ static RegisterSet computeBlockLiveInRegSet(IrFunction& function, const IrBlock&
         case IrCmd::CAPTURE:
             maybeUse(inst.a);
 
-            if (function.boolOp(inst.b))
-                capturedRegs.set(inst.a.index, true);
+            if (function.uintOp(inst.b) == 1)
+                capturedRegs.set(vmRegOp(inst.a), true);
             break;
-        case IrCmd::LOP_SETLIST:
+        case IrCmd::SETLIST:
             use(inst.b);
-            useRange(inst.c.index, function.intOp(inst.d));
+            useRange(vmRegOp(inst.c), function.intOp(inst.d));
             break;
-        case IrCmd::LOP_NAMECALL:
-            use(inst.c);
+        case IrCmd::CALL:
+            use(inst.a);
+            useRange(vmRegOp(inst.a) + 1, function.intOp(inst.b));
 
-            defRange(inst.b.index, 2);
+            defRange(vmRegOp(inst.a), function.intOp(inst.c));
             break;
-        case IrCmd::LOP_CALL:
-            use(inst.b);
-            useRange(inst.b.index + 1, function.intOp(inst.c));
+        case IrCmd::RETURN:
+            useRange(vmRegOp(inst.a), function.intOp(inst.b));
+            break;
 
-            defRange(inst.b.index, function.intOp(inst.d));
-            break;
-        case IrCmd::LOP_RETURN:
-            useRange(inst.b.index, function.intOp(inst.c));
-            break;
+            // TODO: FASTCALL is more restrictive than INVOKE_FASTCALL; we should either determine the exact semantics, or rework it
         case IrCmd::FASTCALL:
         case IrCmd::INVOKE_FASTCALL:
             if (int count = function.intOp(inst.e); count != -1)
             {
                 if (count >= 3)
                 {
-                    LUAU_ASSERT(inst.d.kind == IrOpKind::VmReg && inst.d.index == inst.c.index + 1);
+                    LUAU_ASSERT(inst.d.kind == IrOpKind::VmReg && vmRegOp(inst.d) == vmRegOp(inst.c) + 1);
 
-                    useRange(inst.c.index, count);
+                    useRange(vmRegOp(inst.c), count);
                 }
                 else
                 {
@@ -331,42 +377,29 @@ static RegisterSet computeBlockLiveInRegSet(IrFunction& function, const IrBlock&
             }
             else
             {
-                useVarargs(inst.c.index);
+                useVarargs(vmRegOp(inst.c));
             }
 
-            defRange(inst.b.index, function.intOp(inst.f));
+            // Multiple return sequences (count == -1) are defined by ADJUST_STACK_TO_REG
+            if (int count = function.intOp(inst.f); count != -1)
+                defRange(vmRegOp(inst.b), count);
             break;
-        case IrCmd::LOP_FORGLOOP:
+        case IrCmd::FORGLOOP:
             // First register is not used by instruction, we check that it's still 'nil' with CHECK_TAG
             use(inst.a, 1);
             use(inst.a, 2);
 
             def(inst.a, 2);
-            defRange(inst.a.index + 3, function.intOp(inst.b));
+            defRange(vmRegOp(inst.a) + 3, function.intOp(inst.b));
             break;
-        case IrCmd::LOP_FORGLOOP_FALLBACK:
-            useRange(inst.b.index, 3);
+        case IrCmd::FORGLOOP_FALLBACK:
+            useRange(vmRegOp(inst.a), 3);
 
-            def(inst.b, 2);
-            defRange(inst.b.index + 3, uint8_t(function.intOp(inst.c))); // ignore most significant bit
+            def(inst.a, 2);
+            defRange(vmRegOp(inst.a) + 3, uint8_t(function.intOp(inst.b))); // ignore most significant bit
             break;
-        case IrCmd::LOP_FORGPREP_XNEXT_FALLBACK:
+        case IrCmd::FORGPREP_XNEXT_FALLBACK:
             use(inst.b);
-            break;
-            // B <- C, D
-        case IrCmd::LOP_AND:
-        case IrCmd::LOP_OR:
-            use(inst.c);
-            use(inst.d);
-
-            def(inst.b);
-            break;
-            // B <- C
-        case IrCmd::LOP_ANDK:
-        case IrCmd::LOP_ORK:
-            use(inst.c);
-
-            def(inst.b);
             break;
         case IrCmd::FALLBACK_GETGLOBAL:
             def(inst.b);
@@ -386,13 +419,13 @@ static RegisterSet computeBlockLiveInRegSet(IrFunction& function, const IrBlock&
         case IrCmd::FALLBACK_NAMECALL:
             use(inst.c);
 
-            defRange(inst.b.index, 2);
+            defRange(vmRegOp(inst.b), 2);
             break;
         case IrCmd::FALLBACK_PREPVARARGS:
             // No effect on explicitly referenced registers
             break;
         case IrCmd::FALLBACK_GETVARARGS:
-            defRange(inst.b.index, function.intOp(inst.c));
+            defRange(vmRegOp(inst.b), function.intOp(inst.c));
             break;
         case IrCmd::FALLBACK_NEWCLOSURE:
             def(inst.b);
@@ -403,14 +436,23 @@ static RegisterSet computeBlockLiveInRegSet(IrFunction& function, const IrBlock&
         case IrCmd::FALLBACK_FORGPREP:
             use(inst.b);
 
-            defRange(inst.b.index, 3);
+            defRange(vmRegOp(inst.b), 3);
             break;
         case IrCmd::ADJUST_STACK_TO_REG:
+            defRange(vmRegOp(inst.a), -1);
+            break;
         case IrCmd::ADJUST_STACK_TO_TOP:
-            // While these can be considered as vararg producers and consumers, it is already handled in fastcall instruction
+            // While this can be considered to be a vararg consumer, it is already handled in fastcall instructions
             break;
 
         default:
+            // All instructions which reference registers have to be handled explicitly
+            LUAU_ASSERT(inst.a.kind != IrOpKind::VmReg);
+            LUAU_ASSERT(inst.b.kind != IrOpKind::VmReg);
+            LUAU_ASSERT(inst.c.kind != IrOpKind::VmReg);
+            LUAU_ASSERT(inst.d.kind != IrOpKind::VmReg);
+            LUAU_ASSERT(inst.e.kind != IrOpKind::VmReg);
+            LUAU_ASSERT(inst.f.kind != IrOpKind::VmReg);
             break;
         }
     }
@@ -430,16 +472,19 @@ static void computeCfgLiveInOutRegSets(IrFunction& function)
 {
     CfgInfo& info = function.cfg;
 
+    // Clear existing data
+    // 'in' and 'captured' data is not cleared because it will be overwritten below
+    info.def.clear();
+    info.out.clear();
+
     // Try to compute Luau VM register use-def info
     info.in.resize(function.blocks.size());
+    info.def.resize(function.blocks.size());
     info.out.resize(function.blocks.size());
 
     // Captured registers are tracked for the whole function
     // It should be possible to have a more precise analysis for them in the future
     std::bitset<256> capturedRegs;
-
-    std::vector<RegisterSet> defRss;
-    defRss.resize(function.blocks.size());
 
     // First we compute live-in set of each block
     for (size_t blockIdx = 0; blockIdx < function.blocks.size(); blockIdx++)
@@ -449,7 +494,7 @@ static void computeCfgLiveInOutRegSets(IrFunction& function)
         if (block.kind == IrBlockKind::Dead)
             continue;
 
-        info.in[blockIdx] = computeBlockLiveInRegSet(function, block, defRss[blockIdx], capturedRegs);
+        info.in[blockIdx] = computeBlockLiveInRegSet(function, block, info.def[blockIdx], capturedRegs);
     }
 
     info.captured.regs = capturedRegs;
@@ -480,11 +525,12 @@ static void computeCfgLiveInOutRegSets(IrFunction& function)
 
         IrBlock& curr = function.blocks[blockIdx];
         RegisterSet& inRs = info.in[blockIdx];
+        RegisterSet& defRs = info.def[blockIdx];
         RegisterSet& outRs = info.out[blockIdx];
-        RegisterSet& defRs = defRss[blockIdx];
 
         // Current block has to provide all registers in successor blocks
-        for (uint32_t succIdx : successors(info, blockIdx))
+        BlockIteratorWrapper successorsIt = successors(info, blockIdx);
+        for (uint32_t succIdx : successorsIt)
         {
             IrBlock& succ = function.blocks[succIdx];
 
@@ -493,7 +539,11 @@ static void computeCfgLiveInOutRegSets(IrFunction& function)
             // This is because fallback blocks define an alternative implementation of the same operations
             // This can cause the current block to define more registers that actually were available at fallback entry
             if (curr.kind != IrBlockKind::Fallback && succ.kind == IrBlockKind::Fallback)
+            {
+                // If this is the only successor, this skip will not be valid
+                LUAU_ASSERT(successorsIt.size() != 1);
                 continue;
+            }
 
             const RegisterSet& succRs = info.in[succIdx];
 
@@ -546,6 +596,10 @@ static void computeCfgLiveInOutRegSets(IrFunction& function)
 static void computeCfgBlockEdges(IrFunction& function)
 {
     CfgInfo& info = function.cfg;
+
+    // Clear existing data
+    info.predecessorsOffsets.clear();
+    info.successorsOffsets.clear();
 
     // Compute predecessors block edges
     info.predecessorsOffsets.reserve(function.blocks.size());
@@ -607,13 +661,216 @@ static void computeCfgBlockEdges(IrFunction& function)
     }
 }
 
+// Assign tree depth and pre- and post- DFS visit order of the tree/graph nodes
+// Optionally, collect required node order into a vector
+template<auto childIt>
+void computeBlockOrdering(
+    IrFunction& function, std::vector<BlockOrdering>& ordering, std::vector<uint32_t>* preOrder, std::vector<uint32_t>* postOrder)
+{
+    CfgInfo& info = function.cfg;
+
+    LUAU_ASSERT(info.idoms.size() == function.blocks.size());
+
+    ordering.clear();
+    ordering.resize(function.blocks.size());
+
+    // Get depth-first post-order using manual stack instead of recursion
+    struct StackItem
+    {
+        uint32_t blockIdx;
+        uint32_t itPos;
+    };
+    std::vector<StackItem> stack;
+
+    if (preOrder)
+        preOrder->reserve(function.blocks.size());
+    if (postOrder)
+        postOrder->reserve(function.blocks.size());
+
+    uint32_t nextPreOrder = 0;
+    uint32_t nextPostOrder = 0;
+
+    stack.push_back({0, 0});
+    ordering[0].visited = true;
+    ordering[0].preOrder = nextPreOrder++;
+
+    while (!stack.empty())
+    {
+        StackItem& item = stack.back();
+        BlockIteratorWrapper children = childIt(info, item.blockIdx);
+
+        if (item.itPos < children.size())
+        {
+            uint32_t childIdx = children[item.itPos++];
+
+            BlockOrdering& childOrdering = ordering[childIdx];
+
+            if (!childOrdering.visited)
+            {
+                childOrdering.visited = true;
+                childOrdering.depth = uint32_t(stack.size());
+                childOrdering.preOrder = nextPreOrder++;
+
+                if (preOrder)
+                    preOrder->push_back(item.blockIdx);
+
+                stack.push_back({childIdx, 0});
+            }
+        }
+        else
+        {
+            ordering[item.blockIdx].postOrder = nextPostOrder++;
+
+            if (postOrder)
+                postOrder->push_back(item.blockIdx);
+
+            stack.pop_back();
+        }
+    }
+}
+
+// Dominance tree construction based on 'A Simple, Fast Dominance Algorithm' [Keith D. Cooper, et al]
+// This solution has quadratic complexity in the worst case.
+// It is possible to switch to SEMI-NCA algorithm (also quadratic) mentioned in 'Linear-Time Algorithms for Dominators and Related Problems' [Loukas
+// Georgiadis]
+
+// Find block that is common between blocks 'a' and 'b' on the path towards the entry
+static uint32_t findCommonDominator(const std::vector<uint32_t>& idoms, const std::vector<BlockOrdering>& data, uint32_t a, uint32_t b)
+{
+    while (a != b)
+    {
+        while (data[a].postOrder < data[b].postOrder)
+        {
+            a = idoms[a];
+            LUAU_ASSERT(a != ~0u);
+        }
+
+        while (data[b].postOrder < data[a].postOrder)
+        {
+            b = idoms[b];
+            LUAU_ASSERT(b != ~0u);
+        }
+    }
+
+    return a;
+}
+
+void computeCfgImmediateDominators(IrFunction& function)
+{
+    CfgInfo& info = function.cfg;
+
+    // Clear existing data
+    info.idoms.clear();
+    info.idoms.resize(function.blocks.size(), ~0u);
+
+    std::vector<BlockOrdering> ordering;
+    std::vector<uint32_t> blocksInPostOrder;
+    computeBlockOrdering<successors>(function, ordering, /* preOrder */ nullptr, &blocksInPostOrder);
+
+    // Entry node is temporarily marked to be an idom of itself to make algorithm work
+    info.idoms[0] = 0;
+
+    // Iteratively compute immediate dominators
+    bool updated = true;
+
+    while (updated)
+    {
+        updated = false;
+
+        // Go over blocks in reverse post-order of CFG
+        // '- 2' skips the root node which is last in post-order traversal
+        for (int i = int(blocksInPostOrder.size() - 2); i >= 0; i--)
+        {
+            uint32_t blockIdx = blocksInPostOrder[i];
+            uint32_t newIdom = ~0u;
+
+            for (uint32_t predIdx : predecessors(info, blockIdx))
+            {
+                if (uint32_t predIdom = info.idoms[predIdx]; predIdom != ~0u)
+                {
+                    if (newIdom == ~0u)
+                        newIdom = predIdx;
+                    else
+                        newIdom = findCommonDominator(info.idoms, ordering, newIdom, predIdx);
+                }
+            }
+
+            if (newIdom != info.idoms[blockIdx])
+            {
+                info.idoms[blockIdx] = newIdom;
+
+                // Run until a fixed point is reached
+                updated = true;
+            }
+        }
+    }
+
+    // Entry node doesn't have an immediate dominator
+    info.idoms[0] = ~0u;
+}
+
+void computeCfgDominanceTreeChildren(IrFunction& function)
+{
+    CfgInfo& info = function.cfg;
+
+    // Clear existing data
+    info.domChildren.clear();
+
+    info.domChildrenOffsets.clear();
+    info.domChildrenOffsets.resize(function.blocks.size());
+
+    // First we need to know children count of each node in the dominance tree
+    // We use offset array for to hold this data, counts will be readjusted to offsets later
+    for (size_t blockIdx = 0; blockIdx < function.blocks.size(); blockIdx++)
+    {
+        uint32_t domParent = info.idoms[blockIdx];
+
+        if (domParent != ~0u)
+            info.domChildrenOffsets[domParent]++;
+    }
+
+    // Convert counds to offsets using prefix sum
+    uint32_t total = 0;
+
+    for (size_t blockIdx = 0; blockIdx < function.blocks.size(); blockIdx++)
+    {
+        uint32_t& offset = info.domChildrenOffsets[blockIdx];
+        uint32_t count = offset;
+        offset = total;
+        total += count;
+    }
+
+    info.domChildren.resize(total);
+
+    for (size_t blockIdx = 0; blockIdx < function.blocks.size(); blockIdx++)
+    {
+        // We use a trick here, where we use the starting offset of the dominance children list as the position where to write next child
+        // The values will be adjusted back in a separate loop later
+        uint32_t domParent = info.idoms[blockIdx];
+
+        if (domParent != ~0u)
+            info.domChildren[info.domChildrenOffsets[domParent]++] = uint32_t(blockIdx);
+    }
+
+    // Offsets into the dominance children list were used as iterators in the previous loop
+    // That process basically moved the values in the array 1 step towards the start
+    // Here we move them one step towards the end and restore 0 for first offset
+    for (int blockIdx = int(function.blocks.size() - 1); blockIdx > 0; blockIdx--)
+        info.domChildrenOffsets[blockIdx] = info.domChildrenOffsets[blockIdx - 1];
+    info.domChildrenOffsets[0] = 0;
+
+    computeBlockOrdering<domChildren>(function, info.domOrdering, /* preOrder */ nullptr, /* postOrder */ nullptr);
+}
+
 void computeCfgInfo(IrFunction& function)
 {
     computeCfgBlockEdges(function);
+    computeCfgImmediateDominators(function);
+    computeCfgDominanceTreeChildren(function);
     computeCfgLiveInOutRegSets(function);
 }
 
-BlockIteratorWrapper predecessors(CfgInfo& cfg, uint32_t blockIdx)
+BlockIteratorWrapper predecessors(const CfgInfo& cfg, uint32_t blockIdx)
 {
     LUAU_ASSERT(blockIdx < cfg.predecessorsOffsets.size());
 
@@ -623,7 +880,7 @@ BlockIteratorWrapper predecessors(CfgInfo& cfg, uint32_t blockIdx)
     return BlockIteratorWrapper{cfg.predecessors.data() + start, cfg.predecessors.data() + end};
 }
 
-BlockIteratorWrapper successors(CfgInfo& cfg, uint32_t blockIdx)
+BlockIteratorWrapper successors(const CfgInfo& cfg, uint32_t blockIdx)
 {
     LUAU_ASSERT(blockIdx < cfg.successorsOffsets.size());
 
@@ -631,6 +888,16 @@ BlockIteratorWrapper successors(CfgInfo& cfg, uint32_t blockIdx)
     uint32_t end = blockIdx + 1 < cfg.successorsOffsets.size() ? cfg.successorsOffsets[blockIdx + 1] : uint32_t(cfg.successors.size());
 
     return BlockIteratorWrapper{cfg.successors.data() + start, cfg.successors.data() + end};
+}
+
+BlockIteratorWrapper domChildren(const CfgInfo& cfg, uint32_t blockIdx)
+{
+    LUAU_ASSERT(blockIdx < cfg.domChildrenOffsets.size());
+
+    uint32_t start = cfg.domChildrenOffsets[blockIdx];
+    uint32_t end = blockIdx + 1 < cfg.domChildrenOffsets.size() ? cfg.domChildrenOffsets[blockIdx + 1] : uint32_t(cfg.domChildren.size());
+
+    return BlockIteratorWrapper{cfg.domChildren.data() + start, cfg.domChildren.data() + end};
 }
 
 } // namespace CodeGen

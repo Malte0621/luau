@@ -9,19 +9,217 @@
 #include <stdexcept>
 
 LUAU_FASTFLAGVARIABLE(LuauSubstitutionFixMissingFields, false)
-LUAU_FASTFLAG(LuauClonePublicInterfaceLess)
+LUAU_FASTFLAG(LuauClonePublicInterfaceLess2)
 LUAU_FASTINTVARIABLE(LuauTarjanChildLimit, 10000)
 LUAU_FASTFLAGVARIABLE(LuauClassTypeVarsInSubstitution, false)
 LUAU_FASTFLAGVARIABLE(LuauSubstitutionReentrant, false)
+LUAU_FASTFLAG(DebugLuauReadWriteProperties)
+LUAU_FASTFLAG(LuauCloneSkipNonInternalVisit)
 
 namespace Luau
 {
+
+static TypeId DEPRECATED_shallowClone(TypeId ty, TypeArena& dest, const TxnLog* log, bool alwaysClone)
+{
+    ty = log->follow(ty);
+
+    TypeId result = ty;
+
+    if (auto pty = log->pending(ty))
+        ty = &pty->pending;
+
+    if (const FunctionType* ftv = get<FunctionType>(ty))
+    {
+        FunctionType clone = FunctionType{ftv->level, ftv->scope, ftv->argTypes, ftv->retTypes, ftv->definition, ftv->hasSelf};
+        clone.generics = ftv->generics;
+        clone.genericPacks = ftv->genericPacks;
+        clone.magicFunction = ftv->magicFunction;
+        clone.dcrMagicFunction = ftv->dcrMagicFunction;
+        clone.dcrMagicRefinement = ftv->dcrMagicRefinement;
+        clone.tags = ftv->tags;
+        clone.argNames = ftv->argNames;
+        result = dest.addType(std::move(clone));
+    }
+    else if (const TableType* ttv = get<TableType>(ty))
+    {
+        LUAU_ASSERT(!ttv->boundTo);
+        TableType clone = TableType{ttv->props, ttv->indexer, ttv->level, ttv->scope, ttv->state};
+        clone.definitionModuleName = ttv->definitionModuleName;
+        clone.definitionLocation = ttv->definitionLocation;
+        clone.name = ttv->name;
+        clone.syntheticName = ttv->syntheticName;
+        clone.instantiatedTypeParams = ttv->instantiatedTypeParams;
+        clone.instantiatedTypePackParams = ttv->instantiatedTypePackParams;
+        clone.tags = ttv->tags;
+        result = dest.addType(std::move(clone));
+    }
+    else if (const MetatableType* mtv = get<MetatableType>(ty))
+    {
+        MetatableType clone = MetatableType{mtv->table, mtv->metatable};
+        clone.syntheticName = mtv->syntheticName;
+        result = dest.addType(std::move(clone));
+    }
+    else if (const UnionType* utv = get<UnionType>(ty))
+    {
+        UnionType clone;
+        clone.options = utv->options;
+        result = dest.addType(std::move(clone));
+    }
+    else if (const IntersectionType* itv = get<IntersectionType>(ty))
+    {
+        IntersectionType clone;
+        clone.parts = itv->parts;
+        result = dest.addType(std::move(clone));
+    }
+    else if (const PendingExpansionType* petv = get<PendingExpansionType>(ty))
+    {
+        PendingExpansionType clone{petv->prefix, petv->name, petv->typeArguments, petv->packArguments};
+        result = dest.addType(std::move(clone));
+    }
+    else if (const NegationType* ntv = get<NegationType>(ty))
+    {
+        result = dest.addType(NegationType{ntv->ty});
+    }
+    else if (const TypeFamilyInstanceType* tfit = get<TypeFamilyInstanceType>(ty))
+    {
+        TypeFamilyInstanceType clone{tfit->family, tfit->typeArguments, tfit->packArguments};
+        result = dest.addType(std::move(clone));
+    }
+    else
+        return result;
+
+    asMutable(result)->documentationSymbol = ty->documentationSymbol;
+    return result;
+}
+
+static TypeId shallowClone(TypeId ty, TypeArena& dest, const TxnLog* log, bool alwaysClone)
+{
+    if (!FFlag::LuauClonePublicInterfaceLess2)
+        return DEPRECATED_shallowClone(ty, dest, log, alwaysClone);
+
+    auto go = [ty, &dest, alwaysClone](auto&& a) {
+        using T = std::decay_t<decltype(a)>;
+
+        if constexpr (std::is_same_v<T, FreeType>)
+            return ty;
+        else if constexpr (std::is_same_v<T, BoundType>)
+        {
+            // This should never happen, but visit() cannot see it.
+            LUAU_ASSERT(!"shallowClone didn't follow its argument!");
+            return dest.addType(BoundType{a.boundTo});
+        }
+        else if constexpr (std::is_same_v<T, GenericType>)
+            return dest.addType(a);
+        else if constexpr (std::is_same_v<T, BlockedType>)
+            return dest.addType(a);
+        else if constexpr (std::is_same_v<T, PrimitiveType>)
+            return ty;
+        else if constexpr (std::is_same_v<T, PendingExpansionType>)
+        {
+            PendingExpansionType clone = PendingExpansionType{a.prefix, a.name, a.typeArguments, a.packArguments};
+            return dest.addType(std::move(clone));
+        }
+        else if constexpr (std::is_same_v<T, AnyType>)
+            return ty;
+        else if constexpr (std::is_same_v<T, ErrorType>)
+            return ty;
+        else if constexpr (std::is_same_v<T, UnknownType>)
+            return ty;
+        else if constexpr (std::is_same_v<T, NeverType>)
+            return ty;
+        else if constexpr (std::is_same_v<T, LazyType>)
+            return ty;
+        else if constexpr (std::is_same_v<T, SingletonType>)
+            return dest.addType(a);
+        else if constexpr (std::is_same_v<T, FunctionType>)
+        {
+            FunctionType clone = FunctionType{a.level, a.scope, a.argTypes, a.retTypes, a.definition, a.hasSelf};
+            clone.generics = a.generics;
+            clone.genericPacks = a.genericPacks;
+            clone.magicFunction = a.magicFunction;
+            clone.dcrMagicFunction = a.dcrMagicFunction;
+            clone.dcrMagicRefinement = a.dcrMagicRefinement;
+            clone.tags = a.tags;
+            clone.argNames = a.argNames;
+            return dest.addType(std::move(clone));
+        }
+        else if constexpr (std::is_same_v<T, TableType>)
+        {
+            LUAU_ASSERT(!a.boundTo);
+            TableType clone = TableType{a.props, a.indexer, a.level, a.scope, a.state};
+            clone.definitionModuleName = a.definitionModuleName;
+            clone.definitionLocation = a.definitionLocation;
+            clone.name = a.name;
+            clone.syntheticName = a.syntheticName;
+            clone.instantiatedTypeParams = a.instantiatedTypeParams;
+            clone.instantiatedTypePackParams = a.instantiatedTypePackParams;
+            clone.tags = a.tags;
+            return dest.addType(std::move(clone));
+        }
+        else if constexpr (std::is_same_v<T, MetatableType>)
+        {
+            MetatableType clone = MetatableType{a.table, a.metatable};
+            clone.syntheticName = a.syntheticName;
+            return dest.addType(std::move(clone));
+        }
+        else if constexpr (std::is_same_v<T, UnionType>)
+        {
+            UnionType clone;
+            clone.options = a.options;
+            return dest.addType(std::move(clone));
+        }
+        else if constexpr (std::is_same_v<T, IntersectionType>)
+        {
+            IntersectionType clone;
+            clone.parts = a.parts;
+            return dest.addType(std::move(clone));
+        }
+        else if constexpr (std::is_same_v<T, ClassType>)
+        {
+            if (alwaysClone)
+            {
+                if (FFlag::LuauTypecheckClassTypeIndexers)
+                {
+                    ClassType clone{a.name, a.props, a.parent, a.metatable, a.tags, a.userData, a.definitionModuleName, a.indexer};
+                    return dest.addType(std::move(clone));
+                }
+                else
+                {
+                    ClassType clone{a.name, a.props, a.parent, a.metatable, a.tags, a.userData, a.definitionModuleName};
+                    return dest.addType(std::move(clone));
+                }
+            }
+            else
+                return ty;
+        }
+        else if constexpr (std::is_same_v<T, NegationType>)
+            return dest.addType(NegationType{a.ty});
+        else if constexpr (std::is_same_v<T, TypeFamilyInstanceType>)
+        {
+            TypeFamilyInstanceType clone{a.family, a.typeArguments, a.packArguments};
+            return dest.addType(std::move(clone));
+        }
+        else
+            static_assert(always_false_v<T>, "Non-exhaustive shallowClone switch");
+    };
+
+    ty = log->follow(ty);
+
+    if (auto pty = log->pending(ty))
+        ty = &pty->pending;
+
+    TypeId resTy = visit(go, ty->ty);
+    if (resTy != ty)
+        asMutable(resTy)->documentationSymbol = ty->documentationSymbol;
+
+    return resTy;
+}
 
 void Tarjan::visitChildren(TypeId ty, int index)
 {
     LUAU_ASSERT(ty == log->follow(ty));
 
-    if (ignoreChildren(ty))
+    if (FFlag::LuauCloneSkipNonInternalVisit ? ignoreChildrenVisit(ty) : ignoreChildren(ty))
         return;
 
     if (auto pty = log->pending(ty))
@@ -44,7 +242,16 @@ void Tarjan::visitChildren(TypeId ty, int index)
     {
         LUAU_ASSERT(!ttv->boundTo);
         for (const auto& [name, prop] : ttv->props)
-            visitChild(prop.type);
+        {
+            if (FFlag::DebugLuauReadWriteProperties)
+            {
+                visitChild(prop.readType());
+                visitChild(prop.writeType());
+            }
+            else
+                visitChild(prop.type());
+        }
+
         if (ttv->indexer)
         {
             visitChild(ttv->indexer->indexType);
@@ -80,16 +287,33 @@ void Tarjan::visitChildren(TypeId ty, int index)
         for (TypePackId a : petv->packArguments)
             visitChild(a);
     }
+    else if (const TypeFamilyInstanceType* tfit = get<TypeFamilyInstanceType>(ty))
+    {
+        for (TypeId a : tfit->typeArguments)
+            visitChild(a);
+
+        for (TypePackId a : tfit->packArguments)
+            visitChild(a);
+    }
     else if (const ClassType* ctv = get<ClassType>(ty); FFlag::LuauClassTypeVarsInSubstitution && ctv)
     {
-        for (auto [name, prop] : ctv->props)
-            visitChild(prop.type);
+        for (const auto& [name, prop] : ctv->props)
+            visitChild(prop.type());
 
         if (ctv->parent)
             visitChild(*ctv->parent);
 
         if (ctv->metatable)
             visitChild(*ctv->metatable);
+
+        if (FFlag::LuauTypecheckClassTypeIndexers)
+        {
+            if (ctv->indexer)
+            {
+                visitChild(ctv->indexer->indexType);
+                visitChild(ctv->indexer->indexResultType);
+            }
+        }
     }
     else if (const NegationType* ntv = get<NegationType>(ty))
     {
@@ -101,7 +325,7 @@ void Tarjan::visitChildren(TypePackId tp, int index)
 {
     LUAU_ASSERT(tp == log->follow(tp));
 
-    if (ignoreChildren(tp))
+    if (FFlag::LuauCloneSkipNonInternalVisit ? ignoreChildrenVisit(tp) : ignoreChildren(tp))
         return;
 
     if (auto ptp = log->pending(tp))
@@ -469,7 +693,7 @@ std::optional<TypePackId> Substitution::substitute(TypePackId tp)
 
 TypeId Substitution::clone(TypeId ty)
 {
-    return shallowClone(ty, *arena, log, /* alwaysClone */ FFlag::LuauClonePublicInterfaceLess);
+    return shallowClone(ty, *arena, log, /* alwaysClone */ FFlag::LuauClonePublicInterfaceLess2);
 }
 
 TypePackId Substitution::clone(TypePackId tp)
@@ -494,7 +718,15 @@ TypePackId Substitution::clone(TypePackId tp)
             clone.hidden = vtp->hidden;
         return addTypePack(std::move(clone));
     }
-    else if (FFlag::LuauClonePublicInterfaceLess)
+    else if (const TypeFamilyInstanceTypePack* tfitp = get<TypeFamilyInstanceTypePack>(tp))
+    {
+        TypeFamilyInstanceTypePack clone{
+            tfitp->family, std::vector<TypeId>(tfitp->typeArguments.size()), std::vector<TypePackId>(tfitp->packArguments.size())};
+        clone.typeArguments.assign(tfitp->typeArguments.begin(), tfitp->typeArguments.end());
+        clone.packArguments.assign(tfitp->packArguments.begin(), tfitp->packArguments.end());
+        return addTypePack(std::move(clone));
+    }
+    else if (FFlag::LuauClonePublicInterfaceLess2)
     {
         return addTypePack(*tp);
     }
@@ -575,7 +807,13 @@ void Substitution::replaceChildren(TypeId ty)
     {
         LUAU_ASSERT(!ttv->boundTo);
         for (auto& [name, prop] : ttv->props)
-            prop.type = replace(prop.type);
+        {
+            if (FFlag::DebugLuauReadWriteProperties)
+                prop = Property::create(replace(prop.readType()), replace(prop.writeType()));
+            else
+                prop.setType(replace(prop.type()));
+        }
+
         if (ttv->indexer)
         {
             ttv->indexer->indexType = replace(ttv->indexer->indexType);
@@ -611,16 +849,33 @@ void Substitution::replaceChildren(TypeId ty)
         for (TypePackId& a : petv->packArguments)
             a = replace(a);
     }
+    else if (TypeFamilyInstanceType* tfit = getMutable<TypeFamilyInstanceType>(ty))
+    {
+        for (TypeId& a : tfit->typeArguments)
+            a = replace(a);
+
+        for (TypePackId& a : tfit->packArguments)
+            a = replace(a);
+    }
     else if (ClassType* ctv = getMutable<ClassType>(ty); FFlag::LuauClassTypeVarsInSubstitution && ctv)
     {
         for (auto& [name, prop] : ctv->props)
-            prop.type = replace(prop.type);
+            prop.setType(replace(prop.type()));
 
         if (ctv->parent)
             ctv->parent = replace(*ctv->parent);
 
         if (ctv->metatable)
             ctv->metatable = replace(*ctv->metatable);
+
+        if (FFlag::LuauTypecheckClassTypeIndexers)
+        {
+            if (ctv->indexer)
+            {
+                ctv->indexer->indexType = replace(ctv->indexer->indexType);
+                ctv->indexer->indexResultType = replace(ctv->indexer->indexResultType);
+            }
+        }
     }
     else if (NegationType* ntv = getMutable<NegationType>(ty))
     {
@@ -648,6 +903,14 @@ void Substitution::replaceChildren(TypePackId tp)
     else if (VariadicTypePack* vtp = getMutable<VariadicTypePack>(tp))
     {
         vtp->ty = replace(vtp->ty);
+    }
+    else if (TypeFamilyInstanceTypePack* tfitp = getMutable<TypeFamilyInstanceTypePack>(tp))
+    {
+        for (TypeId& t : tfitp->typeArguments)
+            t = replace(t);
+
+        for (TypePackId& t : tfitp->packArguments)
+            t = replace(t);
     }
 }
 

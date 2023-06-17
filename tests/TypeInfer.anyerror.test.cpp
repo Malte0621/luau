@@ -108,7 +108,10 @@ TEST_CASE_FIXTURE(Fixture, "for_in_loop_iterator_is_error2")
         end
     )");
 
-    LUAU_REQUIRE_ERROR_COUNT(1, result);
+    if (FFlag::DebugLuauDeferredConstraintResolution)
+        LUAU_REQUIRE_ERROR_COUNT(2, result);
+    else
+        LUAU_REQUIRE_ERROR_COUNT(1, result);
 
     CHECK_EQ("*error-type*", toString(requireType("a")));
 }
@@ -195,7 +198,7 @@ TEST_CASE_FIXTURE(Fixture, "assign_prop_to_table_by_calling_any_yields_any")
     REQUIRE(ttv);
     REQUIRE(ttv->props.count("prop"));
 
-    REQUIRE_EQ("any", toString(ttv->props["prop"].type));
+    REQUIRE_EQ("any", toString(ttv->props["prop"].type()));
 }
 
 TEST_CASE_FIXTURE(Fixture, "quantify_any_does_not_bind_to_itself")
@@ -225,7 +228,10 @@ TEST_CASE_FIXTURE(Fixture, "calling_error_type_yields_error")
 
     CHECK_EQ("unknown", err->name);
 
-    CHECK_EQ("*error-type*", toString(requireType("a")));
+    if (FFlag::DebugLuauDeferredConstraintResolution)
+        CHECK_EQ("any", toString(requireType("a")));
+    else
+        CHECK_EQ("*error-type*", toString(requireType("a")));
 }
 
 TEST_CASE_FIXTURE(Fixture, "chain_calling_error_type_yields_error")
@@ -234,7 +240,10 @@ TEST_CASE_FIXTURE(Fixture, "chain_calling_error_type_yields_error")
         local a = Utility.Create "Foo" {}
     )");
 
-    CHECK_EQ("*error-type*", toString(requireType("a")));
+    if (FFlag::DebugLuauDeferredConstraintResolution)
+        CHECK_EQ("any", toString(requireType("a")));
+    else
+        CHECK_EQ("*error-type*", toString(requireType("a")));
 }
 
 TEST_CASE_FIXTURE(BuiltinsFixture, "replace_every_free_type_when_unifying_a_complex_function_with_any")
@@ -341,6 +350,21 @@ stat = stat and tonumber(stat) or stat
     )");
 
     LUAU_REQUIRE_NO_ERRORS(result);
+}
+
+TEST_CASE_FIXTURE(Fixture, "intersection_of_any_can_have_props")
+{
+    // *blocked-130* ~ hasProp any & ~(false?), "_status"
+    CheckResult result = check(R"(
+function foo(x: any, y)
+    if x then
+        return x._status
+    end
+    return y
+end
+)");
+
+    CHECK("(any, any) -> any" == toString(requireType("foo")));
 }
 
 TEST_SUITE_END();

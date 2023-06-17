@@ -25,7 +25,7 @@
 // Additionally, in some specific instructions such as ANDK, the limit on the encoded value is smaller; this means that if a value is larger, a different instruction must be selected.
 //
 // Registers: 0-254. Registers refer to the values on the function's stack frame, including arguments.
-// Upvalues: 0-254. Upvalues refer to the values stored in the closure object.
+// Upvalues: 0-199. Upvalues refer to the values stored in the closure object.
 // Constants: 0-2^23-1. Constants are stored in a table allocated with each proto; to allow for future bytecode tweaks the encodable value is limited to 23 bits.
 // Closures: 0-2^15-1. Closures are created from child protos via a child index; the limit is for the number of closures immediately referenced in each function.
 // Jumps: -2^23..2^23. Jump offsets are specified in word increments, so jumping over an instruction may sometimes require an offset of 2 or more. Note that for jump instructions with AUX, the AUX word is included as part of the jump offset.
@@ -93,12 +93,12 @@ enum LuauOpcode
 
     // GETUPVAL: load upvalue from the upvalue table for the current function
     // A: target register
-    // B: upvalue index (0..255)
+    // B: upvalue index
     LOP_GETUPVAL,
 
     // SETUPVAL: store value into the upvalue table for the current function
     // A: target register
-    // B: upvalue index (0..255)
+    // B: upvalue index
     LOP_SETUPVAL,
 
     // CLOSEUPVALS: close (migrate to heap) all upvalues that were captured for registers >= target
@@ -300,8 +300,9 @@ enum LuauOpcode
     // A: target register (see FORGLOOP for register layout)
     LOP_FORGPREP_NEXT,
 
-    // removed in v3
-    LOP_DEP_FORGLOOP_NEXT,
+    // NATIVECALL: start executing new function in native code
+    // this is a pseudo-instruction that is never emitted by bytecode compiler, but can be constructed at runtime to accelerate native code dispatch
+    LOP_NATIVECALL,
 
     // GETVARARGS: copy variables into the target register from vararg storage for current function
     // A: target register
@@ -412,8 +413,10 @@ enum LuauBytecodeTag
 {
     // Bytecode version; runtime supports [MIN, MAX], compiler emits TARGET by default but may emit a higher version when flags are enabled
     LBC_VERSION_MIN = 3,
-    LBC_VERSION_MAX = 3,
+    LBC_VERSION_MAX = 4,
     LBC_VERSION_TARGET = 3,
+    // Type encoding version
+    LBC_TYPE_VERSION = 1,
     // Types of constant table entries
     LBC_CONSTANT_NIL = 0,
     LBC_CONSTANT_BOOLEAN,
@@ -422,6 +425,25 @@ enum LuauBytecodeTag
     LBC_CONSTANT_IMPORT,
     LBC_CONSTANT_TABLE,
     LBC_CONSTANT_CLOSURE,
+};
+
+// Type table tags
+enum LuauBytecodeEncodedType
+{
+    LBC_TYPE_NIL = 0,
+    LBC_TYPE_BOOLEAN,
+    LBC_TYPE_NUMBER,
+    LBC_TYPE_STRING,
+    LBC_TYPE_TABLE,
+    LBC_TYPE_FUNCTION,
+    LBC_TYPE_THREAD,
+    LBC_TYPE_USERDATA,
+    LBC_TYPE_VECTOR,
+
+    LBC_TYPE_ANY = 15,
+    LBC_TYPE_OPTIONAL_BIT = 1 << 7,
+
+    LBC_TYPE_INVALID = 256,
 };
 
 // Builtin function ids, used in LOP_FASTCALL

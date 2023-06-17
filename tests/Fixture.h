@@ -66,7 +66,7 @@ struct Fixture
     CheckResult check(const std::string& source);
 
     LintResult lint(const std::string& source, const std::optional<LintOptions>& lintOptions = {});
-    LintResult lintTyped(const std::string& source, const std::optional<LintOptions>& lintOptions = {});
+    LintResult lintModule(const ModuleName& moduleName, const std::optional<LintOptions>& lintOptions = {});
 
     /// Parse with all language extensions enabled
     ParseResult parseEx(const std::string& source, const ParseOptions& parseOptions = {});
