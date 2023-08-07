@@ -274,9 +274,6 @@ std::string runCode(lua_State* L, const std::string& source)
         return error;
     }
 
-    if (codegen)
-        Luau::CodeGen::compile(L, -1);
-
     lua_State* T = lua_newthread(L);
 
     lua_pushvalue(L, -2);
@@ -674,6 +671,10 @@ int replMain(int argc, char** argv)
     Luau::assertHandler() = assertionHandler;
 
     setLuauFlagsDefault();
+
+#ifdef _WIN32
+    SetConsoleOutputCP(CP_UTF8);
+#endif
 
     int profile = 0;
     bool coverage = false;

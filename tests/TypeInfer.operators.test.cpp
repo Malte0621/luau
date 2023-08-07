@@ -670,7 +670,9 @@ TEST_CASE_FIXTURE(Fixture, "strict_binary_op_where_lhs_unknown")
     if (FFlag::DebugLuauDeferredConstraintResolution)
     {
         LUAU_REQUIRE_ERROR_COUNT(ops.size(), result);
-        CHECK_EQ("Type family instance Add<a, b> depends on generic function parameters but does not appear in the function signature; this construct cannot be type-checked at this time", toString(result.errors[0]));
+        CHECK_EQ("Type family instance Add<a, b> depends on generic function parameters but does not appear in the function signature; this "
+                 "construct cannot be type-checked at this time",
+            toString(result.errors[0]));
         CHECK_EQ("Unknown type used in - operation; consider adding a type annotation to 'a'", toString(result.errors[1]));
     }
     else
@@ -1236,6 +1238,23 @@ TEST_CASE_FIXTURE(Fixture, "add_type_family_works")
     CHECK(toString(requireType("a")) == "number");
     CHECK(toString(requireType("b")) == "Add<string, string>");
     CHECK(toString(result.errors[0]) == "Type family instance Add<string, string> is uninhabited");
+}
+
+TEST_CASE_FIXTURE(BuiltinsFixture, "normalize_strings_comparison")
+{
+    CheckResult result = check(R"(
+local function sortKeysForPrinting(a: any, b)
+	local typeofA = type(a)
+	local typeofB = type(b)
+	-- strings and numbers are sorted numerically/alphabetically
+	if typeofA == typeofB and (typeofA == "number" or typeofA == "string") then
+		return a < b
+	end
+	-- sort the rest by type name
+	return typeofA < typeofB
+end
+)");
+    LUAU_REQUIRE_NO_ERRORS(result);
 }
 
 TEST_SUITE_END();

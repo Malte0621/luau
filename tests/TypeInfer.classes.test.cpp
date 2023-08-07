@@ -12,7 +12,7 @@
 using namespace Luau;
 using std::nullopt;
 
-LUAU_FASTFLAG(LuauTypeMismatchInvarianceInError);
+LUAU_FASTFLAG(DebugLuauDeferredConstraintResolution);
 
 TEST_SUITE_BEGIN("TypeInferClasses");
 
@@ -462,14 +462,9 @@ local b: B = a
     )");
 
     LUAU_REQUIRE_ERRORS(result);
-    if (FFlag::LuauTypeMismatchInvarianceInError)
-        CHECK_EQ(toString(result.errors[0]), R"(Type 'A' could not be converted into 'B'
+    CHECK_EQ(toString(result.errors[0]), R"(Type 'A' could not be converted into 'B'
 caused by:
   Property 'x' is not compatible. Type 'ChildClass' could not be converted into 'BaseClass' in an invariant context)");
-    else
-        CHECK_EQ(toString(result.errors[0]), R"(Type 'A' could not be converted into 'B'
-caused by:
-  Property 'x' is not compatible. Type 'ChildClass' could not be converted into 'BaseClass')");
 }
 
 TEST_CASE_FIXTURE(ClassFixture, "callable_classes")
@@ -486,7 +481,6 @@ TEST_CASE_FIXTURE(ClassFixture, "callable_classes")
 TEST_CASE_FIXTURE(ClassFixture, "indexable_classes")
 {
     // Test reading from an index
-    ScopedFastFlag LuauTypecheckClassTypeIndexers("LuauTypecheckClassTypeIndexers", true);
     {
         CheckResult result = check(R"(
             local x : IndexableClass

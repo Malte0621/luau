@@ -88,6 +88,7 @@ target_sources(Luau.CodeGen PRIVATE
     CodeGen/src/CodeAllocator.cpp
     CodeGen/src/CodeBlockUnwind.cpp
     CodeGen/src/CodeGen.cpp
+    CodeGen/src/CodeGenAssembly.cpp
     CodeGen/src/CodeGenUtils.cpp
     CodeGen/src/CodeGenA64.cpp
     CodeGen/src/CodeGenX64.cpp
@@ -115,6 +116,7 @@ target_sources(Luau.CodeGen PRIVATE
 
     CodeGen/src/BitUtils.h
     CodeGen/src/ByteUtils.h
+    CodeGen/src/CodeGenLower.h
     CodeGen/src/CodeGenUtils.h
     CodeGen/src/CodeGenA64.h
     CodeGen/src/CodeGenX64.h
@@ -141,6 +143,7 @@ target_sources(Luau.Analysis PRIVATE
     Analysis/include/Luau/Autocomplete.h
     Analysis/include/Luau/Breadcrumb.h
     Analysis/include/Luau/BuiltinDefinitions.h
+    Analysis/include/Luau/Cancellation.h
     Analysis/include/Luau/Clone.h
     Analysis/include/Luau/Config.h
     Analysis/include/Luau/Constraint.h
@@ -150,6 +153,7 @@ target_sources(Luau.Analysis PRIVATE
     Analysis/include/Luau/DataFlowGraph.h
     Analysis/include/Luau/DcrLogger.h
     Analysis/include/Luau/Def.h
+    Analysis/include/Luau/Differ.h
     Analysis/include/Luau/Documentation.h
     Analysis/include/Luau/Error.h
     Analysis/include/Luau/FileResolver.h
@@ -182,6 +186,7 @@ target_sources(Luau.Analysis PRIVATE
     Analysis/include/Luau/TypeArena.h
     Analysis/include/Luau/TypeAttach.h
     Analysis/include/Luau/TypeChecker2.h
+    Analysis/include/Luau/TypeCheckLimits.h
     Analysis/include/Luau/TypedAllocator.h
     Analysis/include/Luau/TypeFamily.h
     Analysis/include/Luau/TypeInfer.h
@@ -189,6 +194,7 @@ target_sources(Luau.Analysis PRIVATE
     Analysis/include/Luau/TypeUtils.h
     Analysis/include/Luau/Unifiable.h
     Analysis/include/Luau/Unifier.h
+    Analysis/include/Luau/Unifier2.h
     Analysis/include/Luau/UnifierSharedState.h
     Analysis/include/Luau/Variant.h
     Analysis/include/Luau/VisitType.h
@@ -207,6 +213,7 @@ target_sources(Luau.Analysis PRIVATE
     Analysis/src/DataFlowGraph.cpp
     Analysis/src/DcrLogger.cpp
     Analysis/src/Def.cpp
+    Analysis/src/Differ.cpp
     Analysis/src/EmbeddedBuiltinDefinitions.cpp
     Analysis/src/Error.cpp
     Analysis/src/Frontend.cpp
@@ -240,6 +247,7 @@ target_sources(Luau.Analysis PRIVATE
     Analysis/src/TypeUtils.cpp
     Analysis/src/Unifiable.cpp
     Analysis/src/Unifier.cpp
+    Analysis/src/Unifier2.cpp
 )
 
 # Luau.VM Sources
@@ -364,6 +372,7 @@ if(TARGET Luau.UnitTest)
         tests/CostModel.test.cpp
         tests/DataFlowGraph.test.cpp
         tests/DenseHash.test.cpp
+	tests/Differ.test.cpp
         tests/Error.test.cpp
         tests/Frontend.test.cpp
         tests/IrBuilder.test.cpp
@@ -417,6 +426,7 @@ if(TARGET Luau.UnitTest)
         tests/TypeInfer.unknownnever.test.cpp
         tests/TypePack.test.cpp
         tests/TypeVar.test.cpp
+        tests/Unifier2.test.cpp
         tests/Variant.test.cpp
         tests/VisitType.test.cpp
         tests/InsertionOrderedMap.test.cpp

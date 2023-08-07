@@ -10,7 +10,6 @@
 #include <stdexcept>
 #include <type_traits>
 
-LUAU_FASTFLAGVARIABLE(LuauTypeMismatchInvarianceInError, false)
 
 static std::string wrongNumberOfArgsString(
     size_t expectedCount, std::optional<size_t> maximumCount, size_t actualCount, const char* argPrefix = nullptr, bool isVariadic = false)
@@ -106,7 +105,7 @@ struct ErrorConverter
         {
             result += "; " + tm.reason;
         }
-        else if (FFlag::LuauTypeMismatchInvarianceInError && tm.context == TypeMismatch::InvariantContext)
+        else if (tm.context == TypeMismatch::InvariantContext)
         {
             result += " in an invariant context";
         }
@@ -496,12 +495,16 @@ struct ErrorConverter
 
     std::string operator()(const WhereClauseNeeded& e) const
     {
-        return "Type family instance " + Luau::toString(e.ty) + " depends on generic function parameters but does not appear in the function signature; this construct cannot be type-checked at this time";
+        return "Type family instance " + Luau::toString(e.ty) +
+               " depends on generic function parameters but does not appear in the function signature; this construct cannot be type-checked at this "
+               "time";
     }
 
     std::string operator()(const PackWhereClauseNeeded& e) const
     {
-        return "Type pack family instance " + Luau::toString(e.tp) + " depends on generic function parameters but does not appear in the function signature; this construct cannot be type-checked at this time";
+        return "Type pack family instance " + Luau::toString(e.tp) +
+               " depends on generic function parameters but does not appear in the function signature; this construct cannot be type-checked at this "
+               "time";
     }
 };
 

@@ -14,7 +14,8 @@
 
 using namespace Luau;
 
-LUAU_FASTFLAG(LuauInstantiateInSubtyping)
+LUAU_FASTFLAG(LuauInstantiateInSubtyping);
+LUAU_FASTFLAG(DebugLuauDeferredConstraintResolution);
 
 TEST_SUITE_BEGIN("TypeInferFunctions");
 
@@ -1312,10 +1313,6 @@ f(function(x) return x * 2 end)
 
 TEST_CASE_FIXTURE(Fixture, "variadic_any_is_compatible_with_a_generic_TypePack")
 {
-    ScopedFastFlag sff[] = {
-        {"LuauVariadicAnyCanBeGeneric", true}
-    };
-
     CheckResult result = check(R"(
         --!strict
         local function f(...) return ... end
@@ -1328,8 +1325,6 @@ TEST_CASE_FIXTURE(Fixture, "variadic_any_is_compatible_with_a_generic_TypePack")
 // https://github.com/Roblox/luau/issues/767
 TEST_CASE_FIXTURE(BuiltinsFixture, "variadic_any_is_compatible_with_a_generic_TypePack_2")
 {
-    ScopedFastFlag sff{"LuauVariadicAnyCanBeGeneric", true};
-
     CheckResult result = check(R"(
         local function somethingThatsAny(...: any)
             print(...)
@@ -1917,13 +1912,8 @@ end
 TEST_CASE_FIXTURE(BuiltinsFixture, "dont_assert_when_the_tarjan_limit_is_exceeded_during_generalization")
 {
     ScopedFastInt sfi{"LuauTarjanChildLimit", 2};
-    ScopedFastFlag sff[] = {
-        {"DebugLuauDeferredConstraintResolution", true},
-        {"LuauClonePublicInterfaceLess2", true},
-        {"LuauSubstitutionReentrant", true},
-        {"LuauSubstitutionFixMissingFields", true},
-        {"LuauCloneSkipNonInternalVisit", true},
-    };
+    if (!FFlag::DebugLuauDeferredConstraintResolution)
+        return;
 
     CheckResult result = check(R"(
         function f(t)
@@ -2087,6 +2077,95 @@ TEST_CASE_FIXTURE(Fixture, "attempt_to_call_an_intersection_of_tables")
         CHECK_EQ(toString(result.errors[0]), "Cannot call non-function {| x: number |} & {| y: string |}");
     else
         CHECK_EQ(toString(result.errors[0]), "Cannot call non-function {| x: number |}");
+}
+
+TEST_CASE_FIXTURE(BuiltinsFixture, "attempt_to_call_an_intersection_of_tables_with_call_metamethod")
+{
+    CheckResult result = check(R"(
+        type Callable = typeof(setmetatable({}, {
+            __call = function(self, ...) return ... end
+        }))
+
+        local function f(t: Callable & { x: number })
+            t()
+        end
+    )");
+
+    LUAU_REQUIRE_NO_ERRORS(result);
+}
+
+TEST_CASE_FIXTURE(Fixture, "generic_packs_are_not_variadic")
+{
+    ScopedFastFlag sff{"DebugLuauDeferredConstraintResolution", true};
+
+    CheckResult result = check(R"(
+        local function apply<a, b..., c...>(f: (a, b...) -> c..., x: a)
+            return f(x)
+        end
+
+        local function add(x: number, y: number)
+            return x + y
+        end
+
+        apply(add, 5)
+    )");
+
+    LUAU_REQUIRE_ERROR_COUNT(1, result);
+}
+
+TEST_CASE_FIXTURE(BuiltinsFixture, "num_is_solved_before_num_or_str")
+{
+    CheckResult result = check(R"(
+        function num()
+            return 5
+        end
+
+        local function num_or_str()
+            if math.random() > 0.5 then
+                return num()
+            else
+                return "some string"
+            end
+        end
+    )");
+
+    LUAU_REQUIRE_ERROR_COUNT(1, result);
+    CHECK_EQ("Type 'string' could not be converted into 'number'", toString(result.errors[0]));
+    CHECK_EQ("() -> number", toString(requireType("num_or_str")));
+}
+
+TEST_CASE_FIXTURE(BuiltinsFixture, "num_is_solved_after_num_or_str")
+{
+    CheckResult result = check(R"(
+        local function num_or_str()
+            if math.random() > 0.5 then
+                return num()
+            else
+                return "some string"
+            end
+        end
+
+        function num()
+            return 5
+        end
+    )");
+
+    LUAU_REQUIRE_ERROR_COUNT(1, result);
+    CHECK_EQ("Type 'string' could not be converted into 'number'", toString(result.errors[0]));
+    CHECK_EQ("() -> number", toString(requireType("num_or_str")));
+}
+
+TEST_CASE_FIXTURE(BuiltinsFixture, "apply_of_lambda_with_inferred_and_explicit_types")
+{
+    CheckResult result = check(R"(
+        local function apply(f, x) return f(x) end
+        local x = apply(function(x: string): number return 5 end, "hello!")
+
+        local function apply_explicit<A, B...>(f: (A) -> B..., x: A): B... return f(x) end
+        local x = apply_explicit(function(x: string): number return 5 end, "hello!")
+    )");
+
+    LUAU_REQUIRE_NO_ERRORS(result);
 }
 
 TEST_SUITE_END();

@@ -415,6 +415,8 @@ static void handleBuiltinEffects(ConstPropState& state, LuauBuiltinFunction bfid
     case LBF_RAWLEN:
     case LBF_BIT32_EXTRACTK:
     case LBF_GETMETATABLE:
+    case LBF_TONUMBER:
+    case LBF_TOSTRING:
         break;
     case LBF_SETMETATABLE:
         state.invalidateHeap(); // TODO: only knownNoMetatable is affected and we might know which one
@@ -441,17 +443,25 @@ static void constPropInInst(ConstPropState& state, IrBuilder& build, IrFunction&
             state.substituteOrRecordVmRegLoad(inst);
         break;
     case IrCmd::LOAD_DOUBLE:
-        if (IrOp value = state.tryGetValue(inst.a); value.kind == IrOpKind::Constant)
+    {
+        IrOp value = state.tryGetValue(inst.a);
+
+        if (function.asDoubleOp(value))
             substitute(function, inst, value);
         else if (inst.a.kind == IrOpKind::VmReg)
             state.substituteOrRecordVmRegLoad(inst);
         break;
+    }
     case IrCmd::LOAD_INT:
-        if (IrOp value = state.tryGetValue(inst.a); value.kind == IrOpKind::Constant)
+    {
+        IrOp value = state.tryGetValue(inst.a);
+
+        if (function.asIntOp(value))
             substitute(function, inst, value);
         else if (inst.a.kind == IrOpKind::VmReg)
             state.substituteOrRecordVmRegLoad(inst);
         break;
+    }
     case IrCmd::LOAD_TVALUE:
         if (inst.a.kind == IrOpKind::VmReg)
             state.substituteOrRecordVmRegLoad(inst);
@@ -503,6 +513,15 @@ static void constPropInInst(ConstPropState& state, IrBuilder& build, IrFunction&
         {
             state.invalidateValue(inst.a);
             state.forwardVmRegStoreToLoad(inst, IrCmd::LOAD_POINTER);
+
+            if (IrInst* instOp = function.asInstOp(inst.b); instOp && instOp->cmd == IrCmd::NEW_TABLE)
+            {
+                if (RegisterInfo* info = state.tryGetRegisterInfo(inst.a))
+                {
+                    info->knownNotReadonly = true;
+                    info->knownNoMetatable = true;
+                }
+            }
         }
         break;
     case IrCmd::STORE_DOUBLE:
@@ -671,6 +690,9 @@ static void constPropInInst(ConstPropState& state, IrBuilder& build, IrFunction&
         }
         break;
     }
+    case IrCmd::CHECK_TRUTHY:
+        // It is possible to check if current tag in state is truthy or not, but this case almost never comes up
+        break;
     case IrCmd::CHECK_READONLY:
         if (RegisterInfo* info = state.tryGetRegisterInfo(inst.a))
         {
@@ -732,6 +754,8 @@ static void constPropInInst(ConstPropState& state, IrBuilder& build, IrFunction&
                 // If the written object is not collectable, barrier is not required
                 if (!isGCO(tag))
                     kill(function, inst);
+                else
+                    replace(function, inst.c, build.constTag(tag));
             }
         }
         break;
@@ -750,6 +774,7 @@ static void constPropInInst(ConstPropState& state, IrBuilder& build, IrFunction&
     case IrCmd::GET_ARR_ADDR:
     case IrCmd::GET_SLOT_NODE_ADDR:
     case IrCmd::GET_HASH_NODE_ADDR:
+    case IrCmd::GET_CLOSURE_UPVAL_ADDR:
         break;
     case IrCmd::ADD_INT:
     case IrCmd::SUB_INT:
@@ -769,10 +794,14 @@ static void constPropInInst(ConstPropState& state, IrBuilder& build, IrFunction&
     case IrCmd::NOT_ANY:
         state.substituteOrRecord(inst, index);
         break;
+    case IrCmd::CMP_ANY:
+        state.invalidateUserCall();
+        break;
     case IrCmd::JUMP:
     case IrCmd::JUMP_EQ_POINTER:
     case IrCmd::JUMP_SLOT_MATCH:
     case IrCmd::TABLE_LEN:
+    case IrCmd::STRING_LEN:
     case IrCmd::NEW_TABLE:
     case IrCmd::DUP_TABLE:
     case IrCmd::TRY_NUM_TO_INDEX:
@@ -812,6 +841,7 @@ static void constPropInInst(ConstPropState& state, IrBuilder& build, IrFunction&
     case IrCmd::BITXOR_UINT:
     case IrCmd::BITOR_UINT:
     case IrCmd::BITNOT_UINT:
+        break;
     case IrCmd::BITLSHIFT_UINT:
     case IrCmd::BITRSHIFT_UINT:
     case IrCmd::BITARSHIFT_UINT:
@@ -820,11 +850,11 @@ static void constPropInInst(ConstPropState& state, IrBuilder& build, IrFunction&
     case IrCmd::BITCOUNTLZ_UINT:
     case IrCmd::BITCOUNTRZ_UINT:
     case IrCmd::INVOKE_LIBM:
+    case IrCmd::GET_TYPE:
+    case IrCmd::GET_TYPEOF:
+    case IrCmd::FINDUPVAL:
         break;
 
-    case IrCmd::JUMP_CMP_ANY:
-        state.invalidateUserCall(); // TODO: if arguments are strings, there will be no user calls
-        break;
     case IrCmd::DO_ARITH:
         state.invalidate(inst.a);
         state.invalidateUserCall();
@@ -910,8 +940,7 @@ static void constPropInInst(ConstPropState& state, IrBuilder& build, IrFunction&
     case IrCmd::FALLBACK_GETVARARGS:
         state.invalidateRegisterRange(vmRegOp(inst.b), function.intOp(inst.c));
         break;
-    case IrCmd::FALLBACK_NEWCLOSURE:
-        state.invalidate(inst.b);
+    case IrCmd::NEWCLOSURE:
         break;
     case IrCmd::FALLBACK_DUPCLOSURE:
         state.invalidate(inst.b);
@@ -964,7 +993,7 @@ static void constPropInBlockChain(IrBuilder& build, std::vector<uint8_t>& visite
 
         // Unconditional jump into a block with a single user (current block) allows us to continue optimization
         // with the information we have gathered so far (unless we have already visited that block earlier)
-        if (termInst.cmd == IrCmd::JUMP)
+        if (termInst.cmd == IrCmd::JUMP && termInst.a.kind != IrOpKind::VmExit)
         {
             IrBlock& target = function.blockOp(termInst.a);
             uint32_t targetIdx = function.getBlockIndex(target);
@@ -998,7 +1027,7 @@ static std::vector<uint32_t> collectDirectBlockJumpPath(IrFunction& function, st
         IrBlock* nextBlock = nullptr;
 
         // A chain is made from internal blocks that were not a part of bytecode CFG
-        if (termInst.cmd == IrCmd::JUMP)
+        if (termInst.cmd == IrCmd::JUMP && termInst.a.kind != IrOpKind::VmExit)
         {
             IrBlock& target = function.blockOp(termInst.a);
             uint32_t targetIdx = function.getBlockIndex(target);
@@ -1039,6 +1068,10 @@ static void tryCreateLinearBlock(IrBuilder& build, std::vector<uint8_t>& visited
     if (termInst.cmd != IrCmd::JUMP)
         return;
 
+    // And it can't be jump to a VM exit
+    if (termInst.a.kind == IrOpKind::VmExit)
+        return;
+
     // And it has to jump to a block with more than one user
     // If there's only one use, it should already be optimized by constPropInBlockChain
     if (function.blockOp(termInst.a).useCount == 1)
@@ -1071,7 +1104,8 @@ static void tryCreateLinearBlock(IrBuilder& build, std::vector<uint8_t>& visited
 
     build.beginBlock(newBlock);
 
-    // By default, blocks are ordered according to start instruction; we alter sort order to make sure linearized block is placed right after the starting block
+    // By default, blocks are ordered according to start instruction; we alter sort order to make sure linearized block is placed right after the
+    // starting block
     function.blocks[newBlock.index].sortkey = startingInsn + 1;
 
     replace(function, termInst.a, newBlock);

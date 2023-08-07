@@ -99,7 +99,6 @@ inline bool isBlockTerminator(IrCmd cmd)
     case IrCmd::JUMP_GE_UINT:
     case IrCmd::JUMP_EQ_POINTER:
     case IrCmd::JUMP_CMP_NUM:
-    case IrCmd::JUMP_CMP_ANY:
     case IrCmd::JUMP_SLOT_MATCH:
     case IrCmd::RETURN:
     case IrCmd::FORGLOOP:
@@ -122,6 +121,7 @@ inline bool isNonTerminatingJump(IrCmd cmd)
     case IrCmd::TRY_CALL_FASTGETTM:
     case IrCmd::CHECK_FASTCALL_RES:
     case IrCmd::CHECK_TAG:
+    case IrCmd::CHECK_TRUTHY:
     case IrCmd::CHECK_READONLY:
     case IrCmd::CHECK_NO_METATABLE:
     case IrCmd::CHECK_SAFE_ENV:
@@ -150,6 +150,7 @@ inline bool hasResult(IrCmd cmd)
     case IrCmd::GET_ARR_ADDR:
     case IrCmd::GET_SLOT_NODE_ADDR:
     case IrCmd::GET_HASH_NODE_ADDR:
+    case IrCmd::GET_CLOSURE_UPVAL_ADDR:
     case IrCmd::ADD_INT:
     case IrCmd::SUB_INT:
     case IrCmd::ADD_NUM:
@@ -166,7 +167,9 @@ inline bool hasResult(IrCmd cmd)
     case IrCmd::SQRT_NUM:
     case IrCmd::ABS_NUM:
     case IrCmd::NOT_ANY:
+    case IrCmd::CMP_ANY:
     case IrCmd::TABLE_LEN:
+    case IrCmd::STRING_LEN:
     case IrCmd::NEW_TABLE:
     case IrCmd::DUP_TABLE:
     case IrCmd::TRY_NUM_TO_INDEX:
@@ -189,6 +192,10 @@ inline bool hasResult(IrCmd cmd)
     case IrCmd::BITCOUNTLZ_UINT:
     case IrCmd::BITCOUNTRZ_UINT:
     case IrCmd::INVOKE_LIBM:
+    case IrCmd::GET_TYPE:
+    case IrCmd::GET_TYPEOF:
+    case IrCmd::NEWCLOSURE:
+    case IrCmd::FINDUPVAL:
         return true;
     default:
         break;
@@ -253,6 +260,9 @@ bool compare(double a, double b, IrCondition cond);
 void foldConstants(IrBuilder& build, IrFunction& function, IrBlock& block, uint32_t instIdx);
 
 uint32_t getNativeContextOffset(int bfid);
+
+// Cleans up blocks that were created with no users
+void killUnusedBlocks(IrFunction& function);
 
 } // namespace CodeGen
 } // namespace Luau

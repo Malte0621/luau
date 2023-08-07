@@ -77,6 +77,12 @@ enum class IrCmd : uint8_t
     // B: unsigned int (hash)
     GET_HASH_NODE_ADDR,
 
+    // Get pointer (TValue) to Closure upvalue.
+    // A: pointer or undef (Closure)
+    // B: UPn
+    // When undef is specified, uses current function Closure.
+    GET_CLOSURE_UPVAL_ADDR,
+
     // Store a tag into TValue
     // A: Rn
     // B: tag
@@ -162,10 +168,15 @@ enum class IrCmd : uint8_t
     // Compute Luau 'not' operation on destructured TValue
     // A: tag
     // B: int (value)
-    NOT_ANY, // TODO: boolean specialization will be useful
+    NOT_ANY,
+
+    // Perform a TValue comparison, supported conditions are LessEqual, Less and Equal
+    // A, B: Rn
+    // C: condition
+    CMP_ANY,
 
     // Unconditional jump
-    // A: block
+    // A: block/vmexit
     JUMP,
 
     // Jump if TValue is truthy
@@ -218,13 +229,6 @@ enum class IrCmd : uint8_t
     // E: block (if false)
     JUMP_CMP_NUM,
 
-    // Perform a conditional jump based on the result of TValue comparison
-    // A, B: Rn
-    // C: condition
-    // D: block (if true)
-    // E: block (if false)
-    JUMP_CMP_ANY,
-
     // Perform a conditional jump based on cached table node slot matching the actual table node slot for a key
     // A: pointer (LuaNode)
     // B: Kn
@@ -235,6 +239,10 @@ enum class IrCmd : uint8_t
     // Get table length
     // A: pointer (Table)
     TABLE_LEN,
+
+    // Get string length
+    // A: pointer (string)
+    STRING_LEN,
 
     // Allocate new table
     // A: int (array element count)
@@ -360,32 +368,40 @@ enum class IrCmd : uint8_t
 
     // Guard against tag mismatch
     // A, B: tag
-    // C: block/undef
+    // C: block/vmexit/undef
+    // D: bool (finish execution in VM on failure)
     // In final x64 lowering, A can also be Rn
-    // When undef is specified instead of a block, execution is aborted on check failure
+    // When undef is specified instead of a block, execution is aborted on check failure; if D is true, execution is continued in VM interpreter
+    // instead.
     CHECK_TAG,
+
+    // Guard against a falsy tag+value
+    // A: tag
+    // B: value
+    // C: block/vmexit/undef
+    CHECK_TRUTHY,
 
     // Guard against readonly table
     // A: pointer (Table)
-    // B: block/undef
+    // B: block/vmexit/undef
     // When undef is specified instead of a block, execution is aborted on check failure
     CHECK_READONLY,
 
     // Guard against table having a metatable
     // A: pointer (Table)
-    // B: block/undef
+    // B: block/vmexit/undef
     // When undef is specified instead of a block, execution is aborted on check failure
     CHECK_NO_METATABLE,
 
-    // Guard against executing in unsafe environment
-    // A: block/undef
-    // When undef is specified instead of a block, execution is aborted on check failure
+    // Guard against executing in unsafe environment, exits to VM on check failure
+    // A: vmexit/vmexit/undef
+    // When undef is specified, execution is aborted on check failure
     CHECK_SAFE_ENV,
 
     // Guard against index overflowing the table array size
     // A: pointer (Table)
     // B: int (index)
-    // C: block/undef
+    // C: block/vmexit/undef
     // When undef is specified instead of a block, execution is aborted on check failure
     CHECK_ARRAY_SIZE,
 
@@ -398,7 +414,7 @@ enum class IrCmd : uint8_t
 
     // Guard against table node with a linked next node to ensure that our lookup hits the main position of the key
     // A: pointer (LuaNode)
-    // B: block/undef
+    // B: block/vmexit/undef
     // When undef is specified instead of a block, execution is aborted on check failure
     CHECK_NODE_NO_NEXT,
 
@@ -414,6 +430,7 @@ enum class IrCmd : uint8_t
     // Handle GC write barrier (forward)
     // A: pointer (GCObject)
     // B: Rn (TValue that was written to the object)
+    // C: tag/undef (tag of the value that was written)
     BARRIER_OBJ,
 
     // Handle GC write barrier (backwards) for a write into a table
@@ -423,6 +440,7 @@ enum class IrCmd : uint8_t
     // Handle GC write barrier (forward) for a write into a table
     // A: pointer (Table)
     // B: Rn (TValue that was written to the object)
+    // C: tag/undef (tag of the value that was written)
     BARRIER_TABLE_FORWARD,
 
     // Update savedpc value
@@ -534,10 +552,10 @@ enum class IrCmd : uint8_t
     FALLBACK_GETVARARGS,
 
     // Create closure from a child proto
-    // A: unsigned int (bytecode instruction index)
-    // B: Rn (dest)
+    // A: unsigned int (nups)
+    // B: pointer (table)
     // C: unsigned int (protoid)
-    FALLBACK_NEWCLOSURE,
+    NEWCLOSURE,
 
     // Create closure from a pre-created function object (reusing it unless environments diverge)
     // A: unsigned int (bytecode instruction index)
@@ -584,6 +602,18 @@ enum class IrCmd : uint8_t
     // B: double
     // C: double/int (optional, 2nd argument)
     INVOKE_LIBM,
+
+    // Returns the string name of a type based on tag, alternative for type(x)
+    // A: tag
+    GET_TYPE,
+
+    // Returns the string name of a type either from a __type metatable field or just based on the tag, alternative for typeof(x)
+    // A: Rn
+    GET_TYPEOF,
+
+    // Find or create an upval at the given level
+    // A: Rn (level)
+    FINDUPVAL,
 };
 
 enum class IrConstKind : uint8_t
@@ -600,7 +630,6 @@ struct IrConst
 
     union
     {
-        bool valueBool;
         int valueInt;
         unsigned valueUint;
         double valueDouble;
@@ -655,6 +684,9 @@ enum class IrOpKind : uint32_t
 
     // To reference a VM upvalue
     VmUpvalue,
+
+    // To reference an exit to VM at specific PC pos
+    VmExit,
 };
 
 struct IrOp

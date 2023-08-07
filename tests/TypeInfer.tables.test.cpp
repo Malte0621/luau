@@ -17,7 +17,6 @@ using namespace Luau;
 LUAU_FASTFLAG(LuauLowerBoundsCalculation);
 LUAU_FASTFLAG(DebugLuauDeferredConstraintResolution);
 LUAU_FASTFLAG(LuauInstantiateInSubtyping)
-LUAU_FASTFLAG(LuauTypeMismatchInvarianceInError)
 
 TEST_SUITE_BEGIN("TableTests");
 
@@ -131,6 +130,24 @@ TEST_CASE_FIXTURE(Fixture, "cannot_change_type_of_table_prop")
 {
     CheckResult result = check("local t = {prop=999}   t.prop = 'hello'");
     LUAU_REQUIRE_ERROR_COUNT(1, result);
+}
+
+TEST_CASE_FIXTURE(Fixture, "report_sensible_error_when_adding_a_value_to_a_nonexistent_prop")
+{
+    CheckResult result = check(R"(
+        local t = {}
+        t.foo[1] = 'one'
+    )");
+
+    LUAU_REQUIRE_ERROR_COUNT(1, result);
+
+    INFO(result.errors[0]);
+
+    UnknownProperty* err = get<UnknownProperty>(result.errors[0]);
+    REQUIRE(err);
+
+    CHECK("t" == toString(err->table));
+    CHECK("foo" == err->key);
 }
 
 TEST_CASE_FIXTURE(Fixture, "function_calls_can_produce_tables")
@@ -440,8 +457,6 @@ TEST_CASE_FIXTURE(Fixture, "table_param_row_polymorphism_2")
     )");
 
     LUAU_REQUIRE_NO_ERRORS(result);
-    for (const auto& e : result.errors)
-        std::cout << "Error: " << e << std::endl;
 
     TypeId qType = requireType("q");
     const TableType* qTable = get<TableType>(qType);
@@ -2077,14 +2092,9 @@ local b: B = a
     )");
 
     LUAU_REQUIRE_ERRORS(result);
-    if (FFlag::LuauTypeMismatchInvarianceInError)
-        CHECK_EQ(toString(result.errors[0]), R"(Type 'A' could not be converted into 'B'
+    CHECK_EQ(toString(result.errors[0]), R"(Type 'A' could not be converted into 'B'
 caused by:
   Property 'y' is not compatible. Type 'number' could not be converted into 'string' in an invariant context)");
-    else
-        CHECK_EQ(toString(result.errors[0]), R"(Type 'A' could not be converted into 'B'
-caused by:
-  Property 'y' is not compatible. Type 'number' could not be converted into 'string')");
 }
 
 TEST_CASE_FIXTURE(Fixture, "error_detailed_prop_nested")
@@ -2101,18 +2111,11 @@ local b: B = a
     )");
 
     LUAU_REQUIRE_ERRORS(result);
-    if (FFlag::LuauTypeMismatchInvarianceInError)
-        CHECK_EQ(toString(result.errors[0]), R"(Type 'A' could not be converted into 'B'
+    CHECK_EQ(toString(result.errors[0]), R"(Type 'A' could not be converted into 'B'
 caused by:
   Property 'b' is not compatible. Type 'AS' could not be converted into 'BS'
 caused by:
   Property 'y' is not compatible. Type 'number' could not be converted into 'string' in an invariant context)");
-    else
-        CHECK_EQ(toString(result.errors[0]), R"(Type 'A' could not be converted into 'B'
-caused by:
-  Property 'b' is not compatible. Type 'AS' could not be converted into 'BS'
-caused by:
-  Property 'y' is not compatible. Type 'number' could not be converted into 'string')");
 }
 
 TEST_CASE_FIXTURE(BuiltinsFixture, "error_detailed_metatable_prop")
@@ -2128,18 +2131,11 @@ local c2: typeof(a2) = b2
     )");
 
     LUAU_REQUIRE_ERROR_COUNT(2, result);
-    if (FFlag::LuauTypeMismatchInvarianceInError)
-        CHECK_EQ(toString(result.errors[0]), R"(Type 'b1' could not be converted into 'a1'
+    CHECK_EQ(toString(result.errors[0]), R"(Type 'b1' could not be converted into 'a1'
 caused by:
   Type '{ x: number, y: string }' could not be converted into '{ x: number, y: number }'
 caused by:
   Property 'y' is not compatible. Type 'string' could not be converted into 'number' in an invariant context)");
-    else
-        CHECK_EQ(toString(result.errors[0]), R"(Type 'b1' could not be converted into 'a1'
-caused by:
-  Type '{ x: number, y: string }' could not be converted into '{ x: number, y: number }'
-caused by:
-  Property 'y' is not compatible. Type 'string' could not be converted into 'number')");
 
     if (FFlag::LuauInstantiateInSubtyping)
     {
@@ -2170,14 +2166,9 @@ TEST_CASE_FIXTURE(Fixture, "error_detailed_indexer_key")
     )");
 
     LUAU_REQUIRE_ERRORS(result);
-    if (FFlag::LuauTypeMismatchInvarianceInError)
-        CHECK_EQ(toString(result.errors[0]), R"(Type 'A' could not be converted into 'B'
+    CHECK_EQ(toString(result.errors[0]), R"(Type 'A' could not be converted into 'B'
 caused by:
   Property '[indexer key]' is not compatible. Type 'number' could not be converted into 'string' in an invariant context)");
-    else
-        CHECK_EQ(toString(result.errors[0]), R"(Type 'A' could not be converted into 'B'
-caused by:
-  Property '[indexer key]' is not compatible. Type 'number' could not be converted into 'string')");
 }
 
 TEST_CASE_FIXTURE(Fixture, "error_detailed_indexer_value")
@@ -2191,14 +2182,9 @@ TEST_CASE_FIXTURE(Fixture, "error_detailed_indexer_value")
     )");
 
     LUAU_REQUIRE_ERRORS(result);
-    if (FFlag::LuauTypeMismatchInvarianceInError)
-        CHECK_EQ(toString(result.errors[0]), R"(Type 'A' could not be converted into 'B'
+    CHECK_EQ(toString(result.errors[0]), R"(Type 'A' could not be converted into 'B'
 caused by:
   Property '[indexer value]' is not compatible. Type 'number' could not be converted into 'string' in an invariant context)");
-    else
-        CHECK_EQ(toString(result.errors[0]), R"(Type 'A' could not be converted into 'B'
-caused by:
-  Property '[indexer value]' is not compatible. Type 'number' could not be converted into 'string')");
 }
 
 TEST_CASE_FIXTURE(Fixture, "explicitly_typed_table")
@@ -2871,10 +2857,20 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "table_call_metamethod_must_be_callable")
     )");
 
     LUAU_REQUIRE_ERROR_COUNT(1, result);
-    CHECK(result.errors[0] == TypeError{
-                                  Location{{5, 20}, {5, 21}},
-                                  CannotCallNonFunction{builtinTypes->numberType},
-                              });
+
+    if (FFlag::DebugLuauDeferredConstraintResolution)
+    {
+        CHECK("Cannot call non-function { @metatable { __call: number }, {  } }" == toString(result.errors[0]));
+    }
+    else
+    {
+        TypeError e{
+            Location{{5, 20}, {5, 21}},
+            CannotCallNonFunction{builtinTypes->numberType},
+        };
+
+        CHECK(result.errors[0] == e);
+    }
 }
 
 TEST_CASE_FIXTURE(BuiltinsFixture, "table_call_metamethod_generic")
@@ -3657,6 +3653,77 @@ return function<T>(array: Array<T>, searchElement: any, fromIndex: number?): boo
 	return -1 ~= indexOf(array, searchElement, fromIndex)
 end
 
+    )");
+
+    LUAU_REQUIRE_NO_ERRORS(result);
+}
+
+TEST_CASE_FIXTURE(Fixture, "certain_properties_of_table_literal_arguments_can_be_covariant")
+{
+    CheckResult result = check(R"(
+        function f(a: {[string]: string | {any} | nil })
+            return a
+        end
+
+        local x = f({
+            title = "Feature.VirtualEvents.EnableNotificationsModalTitle",
+            body = "Feature.VirtualEvents.EnableNotificationsModalBody",
+            notNow = "Feature.VirtualEvents.NotNowButton",
+            getNotified = "Feature.VirtualEvents.GetNotifiedButton",
+        })
+    )");
+
+    LUAU_REQUIRE_NO_ERRORS(result);
+}
+
+TEST_CASE_FIXTURE(Fixture, "subproperties_can_also_be_covariantly_tested")
+{
+    CheckResult result = check(R"(
+        type T = {
+            [string]: {[string]: (string | number)?}
+        }
+
+        function f(t: T)
+            return t
+        end
+
+        local x = f({
+            subprop={x="hello"}
+        })
+
+        local y = f({
+            subprop={x=41}
+        })
+
+        local z = f({
+            subprop={}
+        })
+    )");
+
+    LUAU_REQUIRE_NO_ERRORS(result);
+}
+
+TEST_CASE_FIXTURE(Fixture, "cyclic_shifted_tables")
+{
+    CheckResult result = check(R"(
+        local function id<a>(x: a): a
+          return x
+        end
+
+        -- Remove name from cyclic table
+        local foo = id({})
+        foo.foo = id({})
+        foo.foo.foo = id({})
+        foo.foo.foo.foo = id({})
+        foo.foo.foo.foo.foo = foo
+
+        local almostFoo = id({})
+        almostFoo.foo = id({})
+        almostFoo.foo.foo = id({})
+        almostFoo.foo.foo.foo = id({})
+        almostFoo.foo.foo.foo.foo = almostFoo
+        -- Shift
+        almostFoo = almostFoo.foo.foo
     )");
 
     LUAU_REQUIRE_NO_ERRORS(result);

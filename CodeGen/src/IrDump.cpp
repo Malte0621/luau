@@ -61,6 +61,12 @@ static const char* getTagName(uint8_t tag)
         return "tuserdata";
     case LUA_TTHREAD:
         return "tthread";
+    case LUA_TPROTO:
+        return "tproto";
+    case LUA_TUPVAL:
+        return "tupval";
+    case LUA_TDEADKEY:
+        return "tdeadkey";
     default:
         LUAU_ASSERT(!"Unknown type tag");
         LUAU_UNREACHABLE();
@@ -93,6 +99,8 @@ const char* getCmdName(IrCmd cmd)
         return "GET_SLOT_NODE_ADDR";
     case IrCmd::GET_HASH_NODE_ADDR:
         return "GET_HASH_NODE_ADDR";
+    case IrCmd::GET_CLOSURE_UPVAL_ADDR:
+        return "GET_CLOSURE_UPVAL_ADDR";
     case IrCmd::STORE_TAG:
         return "STORE_TAG";
     case IrCmd::STORE_POINTER:
@@ -139,6 +147,8 @@ const char* getCmdName(IrCmd cmd)
         return "ABS_NUM";
     case IrCmd::NOT_ANY:
         return "NOT_ANY";
+    case IrCmd::CMP_ANY:
+        return "CMP_ANY";
     case IrCmd::JUMP:
         return "JUMP";
     case IrCmd::JUMP_IF_TRUTHY:
@@ -157,12 +167,12 @@ const char* getCmdName(IrCmd cmd)
         return "JUMP_EQ_POINTER";
     case IrCmd::JUMP_CMP_NUM:
         return "JUMP_CMP_NUM";
-    case IrCmd::JUMP_CMP_ANY:
-        return "JUMP_CMP_ANY";
     case IrCmd::JUMP_SLOT_MATCH:
         return "JUMP_SLOT_MATCH";
     case IrCmd::TABLE_LEN:
         return "TABLE_LEN";
+    case IrCmd::STRING_LEN:
+        return "STRING_LEN";
     case IrCmd::NEW_TABLE:
         return "NEW_TABLE";
     case IrCmd::DUP_TABLE:
@@ -209,6 +219,8 @@ const char* getCmdName(IrCmd cmd)
         return "PREPARE_FORN";
     case IrCmd::CHECK_TAG:
         return "CHECK_TAG";
+    case IrCmd::CHECK_TRUTHY:
+        return "CHECK_TRUTHY";
     case IrCmd::CHECK_READONLY:
         return "CHECK_READONLY";
     case IrCmd::CHECK_NO_METATABLE:
@@ -265,8 +277,8 @@ const char* getCmdName(IrCmd cmd)
         return "FALLBACK_PREPVARARGS";
     case IrCmd::FALLBACK_GETVARARGS:
         return "FALLBACK_GETVARARGS";
-    case IrCmd::FALLBACK_NEWCLOSURE:
-        return "FALLBACK_NEWCLOSURE";
+    case IrCmd::NEWCLOSURE:
+        return "NEWCLOSURE";
     case IrCmd::FALLBACK_DUPCLOSURE:
         return "FALLBACK_DUPCLOSURE";
     case IrCmd::FALLBACK_FORGPREP:
@@ -297,6 +309,12 @@ const char* getCmdName(IrCmd cmd)
         return "BITCOUNTRZ_UINT";
     case IrCmd::INVOKE_LIBM:
         return "INVOKE_LIBM";
+    case IrCmd::GET_TYPE:
+        return "GET_TYPE";
+    case IrCmd::GET_TYPEOF:
+        return "GET_TYPEOF";
+    case IrCmd::FINDUPVAL:
+        return "FINDUPVAL";
     }
 
     LUAU_UNREACHABLE();
@@ -382,6 +400,9 @@ void toString(IrToStringContext& ctx, IrOp op)
         break;
     case IrOpKind::VmUpvalue:
         append(ctx.result, "U%d", vmUpvalueOp(op));
+        break;
+    case IrOpKind::VmExit:
+        append(ctx.result, "exit(%d)", op.index);
         break;
     }
 }

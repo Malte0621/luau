@@ -161,10 +161,6 @@ TEST_CASE_FIXTURE(TryUnifyFixture, "uninhabited_intersection_sub_anything")
 
 TEST_CASE_FIXTURE(TryUnifyFixture, "uninhabited_table_sub_never")
 {
-    ScopedFastFlag sffs[]{
-        {"LuauUninhabitedSubAnything2", true},
-    };
-
     CheckResult result = check(R"(
         function f(arg : { prop : string & number }) : never
           return arg
@@ -175,10 +171,6 @@ TEST_CASE_FIXTURE(TryUnifyFixture, "uninhabited_table_sub_never")
 
 TEST_CASE_FIXTURE(TryUnifyFixture, "uninhabited_table_sub_anything")
 {
-    ScopedFastFlag sffs[]{
-        {"LuauUninhabitedSubAnything2", true},
-    };
-
     CheckResult result = check(R"(
         function f(arg : { prop : string & number }) : boolean
           return arg
@@ -353,7 +345,6 @@ TEST_CASE_FIXTURE(TryUnifyFixture, "metatables_unify_against_shape_of_free_table
 {
     ScopedFastFlag sff[] = {
         {"LuauTransitiveSubtyping", true},
-        {"DebugLuauDeferredConstraintResolution", true},
     };
 
     TableType::Props freeProps{
@@ -377,6 +368,7 @@ TEST_CASE_FIXTURE(TryUnifyFixture, "metatables_unify_against_shape_of_free_table
     TypeId target = arena.addType(TableType{TableState::Unsealed, TypeLevel{}});
     TypeId metatable = arena.addType(MetatableType{target, mt});
 
+    state.enableNewSolver();
     state.tryUnify(metatable, free);
     state.log.commit();
 
@@ -447,11 +439,10 @@ TEST_CASE_FIXTURE(TryUnifyFixture, "unifying_two_unions_under_dcr_does_not_creat
     const TypeId innerType = arena.freshType(nestedScope.get());
 
     ScopedFastFlag sffs[]{
-        {"DebugLuauDeferredConstraintResolution", true},
         {"LuauAlwaysCommitInferencesOfFunctionCalls", true},
     };
 
-    state.enableScopeTests();
+    state.enableNewSolver();
 
     SUBCASE("equal_scopes")
     {

@@ -274,13 +274,13 @@ static RegisterSet computeBlockLiveInRegSet(IrFunction& function, const IrBlock&
         case IrCmd::STORE_TVALUE:
             maybeDef(inst.a); // Argument can also be a pointer value
             break;
+        case IrCmd::CMP_ANY:
+            use(inst.a);
+            use(inst.b);
+            break;
         case IrCmd::JUMP_IF_TRUTHY:
         case IrCmd::JUMP_IF_FALSY:
             use(inst.a);
-            break;
-        case IrCmd::JUMP_CMP_ANY:
-            use(inst.a);
-            use(inst.b);
             break;
             // A <- B, C
         case IrCmd::DO_ARITH:
@@ -427,9 +427,6 @@ static RegisterSet computeBlockLiveInRegSet(IrFunction& function, const IrBlock&
         case IrCmd::FALLBACK_GETVARARGS:
             defRange(vmRegOp(inst.b), function.intOp(inst.c));
             break;
-        case IrCmd::FALLBACK_NEWCLOSURE:
-            def(inst.b);
-            break;
         case IrCmd::FALLBACK_DUPCLOSURE:
             def(inst.b);
             break;
@@ -443,6 +440,13 @@ static RegisterSet computeBlockLiveInRegSet(IrFunction& function, const IrBlock&
             break;
         case IrCmd::ADJUST_STACK_TO_TOP:
             // While this can be considered to be a vararg consumer, it is already handled in fastcall instructions
+            break;
+        case IrCmd::GET_TYPEOF:
+            use(inst.a);
+            break;
+
+        case IrCmd::FINDUPVAL:
+            use(inst.a);
             break;
 
         default:

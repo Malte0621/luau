@@ -78,9 +78,37 @@ TEST_CASE_FIXTURE(Fixture, "infer_locals_via_assignment_from_its_call_site")
         f("foo")
     )");
 
-    LUAU_REQUIRE_ERROR_COUNT(1, result);
+    if (FFlag::DebugLuauDeferredConstraintResolution)
+    {
+        CHECK("number | string" == toString(requireType("a")));
+        CHECK("(number | string) -> ()" == toString(requireType("f")));
 
-    CHECK_EQ("number", toString(requireType("a")));
+        LUAU_REQUIRE_NO_ERRORS(result);
+    }
+    else
+    {
+        LUAU_REQUIRE_ERROR_COUNT(1, result);
+
+        CHECK_EQ("number", toString(requireType("a")));
+    }
+}
+TEST_CASE_FIXTURE(Fixture, "interesting_local_type_inference_case")
+{
+    ScopedFastFlag sff[] = {
+        {"DebugLuauDeferredConstraintResolution", true},
+    };
+
+    CheckResult result = check(R"(
+        local a
+        function f(x) a = x end
+        f({x = 5})
+        f({x = 5})
+    )");
+
+    CHECK("{ x: number }" == toString(requireType("a")));
+    CHECK("({ x: number }) -> ()" == toString(requireType("f")));
+
+    LUAU_REQUIRE_NO_ERRORS(result);
 }
 
 TEST_CASE_FIXTURE(Fixture, "infer_in_nocheck_mode")
@@ -224,7 +252,7 @@ TEST_CASE_FIXTURE(Fixture, "crazy_complexity")
         A:A():A():A():A():A():A():A():A():A():A():A()
     )");
 
-    std::cout << "OK!  Allocated " << typeChecker.types.size() << " types" << std::endl;
+    MESSAGE("OK!  Allocated ", typeChecker.types.size(), " types");
 }
 #endif
 
@@ -1289,6 +1317,86 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "convoluted_case_where_two_TypeVars_were_boun
     )");
 
     // If this code does not crash, we are in good shape.
+}
+
+/*
+ * Under DCR we had an issue where constraint resolution resulted in the
+ * following:
+ *
+ * *blocked-55* ~ hasProp {- name: *blocked-55* -}, "name"
+ *
+ * This is a perfectly reasonable constraint, but one that doesn't actually
+ * constrain anything.  When we encounter a constraint like this, we need to
+ * replace the result type by a free type that is scoped to the enclosing table.
+ *
+ * Conceptually, it's simplest to think of this constraint as one that is
+ * tautological.  It does not actually contribute any new information.
+ */
+TEST_CASE_FIXTURE(Fixture, "handle_self_referential_HasProp_constraints")
+{
+    CheckResult result = check(R"(
+        local function calculateTopBarHeight(props)
+        end
+        local function isTopPage(props)
+            local topMostOpaquePage
+            if props.avatarRoute then
+                topMostOpaquePage = props.avatarRoute.opaque.name
+            else
+                topMostOpaquePage = props.opaquePage
+            end
+        end
+
+        function TopBarContainer:updateTopBarHeight(prevProps, prevState)
+            calculateTopBarHeight(self.props)
+            isTopPage(self.props)
+            local topMostOpaquePage
+            if self.props.avatarRoute then
+                topMostOpaquePage = self.props.avatarRoute.opaque.name
+                --                  ^--------------------------------^
+            else
+                topMostOpaquePage = self.props.opaquePage
+            end
+        end
+    )");
+}
+
+/* We had an issue where we were unifying two type packs
+ *
+ * free-2-0... and (string, free-4-0...)
+ *
+ * The correct thing to do here is to promote everything on the right side to
+ * level 2-0 before binding the left pack to the right.  If we fail to do this,
+ * then the code fragment here fails to typecheck because the argument and
+ * return types of C are generalized before we ever get to checking the body of
+ * C.
+ */
+TEST_CASE_FIXTURE(Fixture, "promote_tail_type_packs")
+{
+    CheckResult result = check(R"(
+        --!strict
+
+        local A: any = nil
+
+        local C
+        local D = A(
+            A({}, {
+                __call = function(a): string
+                    local E: string = C(a)
+                    return E
+                end
+            }),
+            {
+                F = function(s: typeof(C))
+                end
+            }
+        )
+
+        function C(b: any): string
+            return ''
+        end
+    )");
+
+    LUAU_REQUIRE_NO_ERRORS(result);
 }
 
 TEST_SUITE_END();

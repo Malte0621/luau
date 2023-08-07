@@ -54,8 +54,7 @@ TEST_SUITE_BEGIN("AllocatorTests");
 TEST_CASE("allocator_can_be_moved")
 {
     Counter* c = nullptr;
-    auto inner = [&]()
-    {
+    auto inner = [&]() {
         Luau::Allocator allocator;
         c = allocator.alloc<Counter>();
         Luau::Allocator moved{std::move(allocator)};
@@ -922,8 +921,7 @@ TEST_CASE_FIXTURE(Fixture, "parse_interpolated_string_double_brace_mid")
 
 TEST_CASE_FIXTURE(Fixture, "parse_interpolated_string_without_end_brace")
 {
-    auto columnOfEndBraceError = [this](const char* code)
-    {
+    auto columnOfEndBraceError = [this](const char* code) {
         try
         {
             parse(code);
@@ -1127,6 +1125,10 @@ until false
 
 TEST_CASE_FIXTURE(Fixture, "parse_nesting_based_end_detection_local_function")
 {
+    ScopedFastFlag sff[] = {
+        {"DebugLuauDeferredConstraintResolution", false},
+    };
+
     try
     {
         parse(R"(-- i am line 1
@@ -1159,6 +1161,10 @@ end
 
 TEST_CASE_FIXTURE(Fixture, "parse_nesting_based_end_detection_failsafe_earlier")
 {
+    ScopedFastFlag sff[] = {
+        {"DebugLuauDeferredConstraintResolution", false},
+    };
+
     try
     {
         parse(R"(-- i am line 1
@@ -2387,8 +2393,7 @@ public:
 
 TEST_CASE_FIXTURE(Fixture, "recovery_of_parenthesized_expressions")
 {
-    auto checkAstEquivalence = [this](const char* codeWithErrors, const char* code)
-    {
+    auto checkAstEquivalence = [this](const char* codeWithErrors, const char* code) {
         try
         {
             parse(codeWithErrors);
@@ -2408,8 +2413,7 @@ TEST_CASE_FIXTURE(Fixture, "recovery_of_parenthesized_expressions")
         CHECK_EQ(counterWithErrors.count, counter.count);
     };
 
-    auto checkRecovery = [this, checkAstEquivalence](const char* codeWithErrors, const char* code, unsigned expectedErrorCount)
-    {
+    auto checkRecovery = [this, checkAstEquivalence](const char* codeWithErrors, const char* code, unsigned expectedErrorCount) {
         try
         {
             parse(codeWithErrors);
@@ -2420,6 +2424,10 @@ TEST_CASE_FIXTURE(Fixture, "recovery_of_parenthesized_expressions")
             CHECK_EQ(expectedErrorCount, e.getErrors().size());
             checkAstEquivalence(codeWithErrors, code);
         }
+    };
+
+    ScopedFastFlag sff[] = {
+        {"DebugLuauDeferredConstraintResolution", false},
     };
 
     checkRecovery("function foo(a, b. c) return a + b end", "function foo(a, b) return a + b end", 1);
@@ -2652,6 +2660,10 @@ TEST_CASE_FIXTURE(Fixture, "AstName_comparison")
 
 TEST_CASE_FIXTURE(Fixture, "generic_type_list_recovery")
 {
+    ScopedFastFlag sff[] = {
+        {"DebugLuauDeferredConstraintResolution", false},
+    };
+
     try
     {
         parse(R"(

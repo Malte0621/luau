@@ -7,9 +7,9 @@
 #include "Luau/Unifiable.h"
 
 LUAU_FASTFLAG(DebugLuauCopyBeforeNormalizing)
-LUAU_FASTFLAG(LuauClonePublicInterfaceLess2)
 LUAU_FASTFLAG(DebugLuauReadWriteProperties)
 
+LUAU_FASTFLAG(DebugLuauDeferredConstraintResolution)
 LUAU_FASTINTVARIABLE(LuauTypeCloneRecursionLimit, 300)
 LUAU_FASTFLAGVARIABLE(LuauCloneCyclicUnions, false)
 
@@ -55,7 +55,6 @@ Property clone(const Property& prop, TypeArena& dest, CloneState& cloneState)
 
 static TableIndexer clone(const TableIndexer& indexer, TypeArena& dest, CloneState& cloneState)
 {
-    LUAU_ASSERT(FFlag::LuauTypecheckClassTypeIndexers);
     return TableIndexer{clone(indexer.indexType, dest, cloneState), clone(indexer.indexResultType, dest, cloneState)};
 }
 
@@ -206,7 +205,14 @@ void TypeCloner::defaultClone(const T& t)
 
 void TypeCloner::operator()(const FreeType& t)
 {
-    defaultClone(t);
+    if (FFlag::DebugLuauDeferredConstraintResolution)
+    {
+        FreeType ft{t.scope, clone(t.lowerBound, dest, cloneState), clone(t.upperBound, dest, cloneState)};
+        TypeId res = dest.addType(ft);
+        seenTypes[typeId] = res;
+    }
+    else
+        defaultClone(t);
 }
 
 void TypeCloner::operator()(const GenericType& t)
@@ -312,16 +318,8 @@ void TypeCloner::operator()(const TableType& t)
     for (const auto& [name, prop] : t.props)
         ttv->props[name] = clone(prop, dest, cloneState);
 
-    if (FFlag::LuauTypecheckClassTypeIndexers)
-    {
-        if (t.indexer)
-            ttv->indexer = clone(*t.indexer, dest, cloneState);
-    }
-    else
-    {
-        if (t.indexer)
-            ttv->indexer = TableIndexer{clone(t.indexer->indexType, dest, cloneState), clone(t.indexer->indexResultType, dest, cloneState)};
-    }
+    if (t.indexer)
+        ttv->indexer = clone(*t.indexer, dest, cloneState);
 
     for (TypeId& arg : ttv->instantiatedTypeParams)
         arg = clone(arg, dest, cloneState);
@@ -360,11 +358,8 @@ void TypeCloner::operator()(const ClassType& t)
     if (t.metatable)
         ctv->metatable = clone(*t.metatable, dest, cloneState);
 
-    if (FFlag::LuauTypecheckClassTypeIndexers)
-    {
-        if (t.indexer)
-            ctv->indexer = clone(*t.indexer, dest, cloneState);
-    }
+    if (t.indexer)
+        ctv->indexer = clone(*t.indexer, dest, cloneState);
 }
 
 void TypeCloner::operator()(const AnyType& t)
@@ -376,7 +371,10 @@ void TypeCloner::operator()(const UnionType& t)
 {
     if (FFlag::LuauCloneCyclicUnions)
     {
-        TypeId result = dest.addType(FreeType{nullptr});
+        // We're just using this FreeType as a placeholder until we've finished
+        // cloning the parts of this union so it is okay that its bounds are
+        // nullptr.  We'll never indirect them.
+        TypeId result = dest.addType(FreeType{nullptr, /*lowerBound*/nullptr, /*upperBound*/nullptr});
         seenTypes[typeId] = result;
 
         std::vector<TypeId> options;
