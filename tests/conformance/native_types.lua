@@ -52,6 +52,8 @@ local function checkfunction(a: () -> ()) assert(is_native()) end
 local function checkthread(a: thread) assert(is_native()) end
 local function checkuserdata(a: userdata) assert(is_native()) end
 local function checkvector(a: vector) assert(is_native()) end
+local function checkbuffer(a: buffer) assert(is_native()) end
+local function checkoptbuffer(a: buffer?) assert(is_native()) end
 
 call(checktable, {})
 ecall(checktable, 2)
@@ -68,5 +70,22 @@ ecall(checkuserdata, 2)
 call(checkvector, vector(1, 2, 3))
 ecall(checkvector, 2)
 
+call(checkbuffer, buffer.create(10))
+ecall(checkbuffer, 2)
+call(checkoptbuffer, buffer.create(10))
+call(checkoptbuffer, nil)
+ecall(checkoptbuffer, 2)
+
+local function mutation_causes_bad_exit(a: number, count: number, sum: number)
+  repeat
+    a = 's'
+    sum += count
+    pcall(function() end)
+    count -= 1
+  until count == 0
+  return sum
+end
+
+assert(call(mutation_causes_bad_exit, 5, 10, 0) == 55)
 
 return('OK')

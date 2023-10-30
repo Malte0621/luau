@@ -6,6 +6,8 @@
 #define DOCTEST_CONFIG_OPTIONS_PREFIX ""
 #include "doctest.h"
 
+#include "RegisterCallbacks.h"
+
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -13,7 +15,11 @@
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
-#include <Windows.h> // IsDebuggerPresent
+#include <windows.h> // IsDebuggerPresent
+#endif
+
+#if defined(__x86_64__) || defined(_M_X64)
+#include <immintrin.h>
 #endif
 
 #ifdef __APPLE__
@@ -92,6 +98,8 @@ static int testAssertionHandler(const char* expr, const char* file, int line, co
     return 1;
 }
 
+
+
 struct BoostLikeReporter : doctest::IReporter
 {
     const doctest::TestCaseData* currentTest = nullptr;
@@ -161,8 +169,10 @@ struct BoostLikeReporter : doctest::IReporter
     }
 
     void log_message(const doctest::MessageData& md) override
-    { //
-        printf("%s(%d): ERROR: %s\n", md.m_file, md.m_line, md.m_string.c_str());
+    {
+        const char* severity = (md.m_severity & doctest::assertType::is_warn) ? "WARNING" : "ERROR";
+
+        printf("%s(%d): %s: %s\n", md.m_file, md.m_line, severity, md.m_string.c_str());
     }
 
     // called when a test case is skipped either because it doesn't pass the filters, has a skip decorator
@@ -247,9 +257,24 @@ static void setFastFlags(const std::vector<doctest::String>& flags)
     }
 }
 
+// This function performs system/architecture specific initialization prior to running tests.
+static void initSystem()
+{
+#if defined(__x86_64__) || defined(_M_X64)
+    // Some unit tests make use of denormalized numbers.  So flags to flush to zero or treat denormals as zero
+    // must be disabled for expected behavior.
+    _MM_SET_FLUSH_ZERO_MODE(_MM_FLUSH_ZERO_OFF);
+    _MM_SET_DENORMALS_ZERO_MODE(_MM_DENORMALS_ZERO_OFF);
+#endif
+}
+
 int main(int argc, char** argv)
 {
+    initSystem();
+
     Luau::assertHandler() = testAssertionHandler;
+
+
 
     doctest::registerReporter<BoostLikeReporter>("boost", 0, true);
 
@@ -324,6 +349,14 @@ int main(int argc, char** argv)
             context.addFilter("test-suite", f);
         }
     }
+
+    // These callbacks register unit tests that need runtime support to be
+    // correctly set up. Running them here means that all command line flags
+    // have been parsed, fast flags have been set, and we've potentially already
+    // exited. Once doctest::Context::run is invoked, the test list will be
+    // picked up from global state.
+    for (Luau::RegisterCallback cb : Luau::getRegisterCallbacks())
+        cb();
 
     int result = context.run();
     if (doctest::parseFlag(argc, argv, "--help") || doctest::parseFlag(argc, argv, "-h"))

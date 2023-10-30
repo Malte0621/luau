@@ -1,7 +1,9 @@
 // This file is part of the Luau programming language and is licensed under MIT License; see LICENSE.txt for details
+#include "Types.h"
+
 #include "Luau/BytecodeBuilder.h"
 
-#include "Types.h"
+LUAU_FASTFLAGVARIABLE(LuauCompileBufferAnnotation, false)
 
 namespace Luau
 {
@@ -27,6 +29,8 @@ static LuauBytecodeType getPrimitiveType(AstName name)
         return LBC_TYPE_STRING;
     else if (name == "thread")
         return LBC_TYPE_THREAD;
+    else if (FFlag::LuauCompileBufferAnnotation && name == "buffer")
+        return LBC_TYPE_BUFFER;
     else if (name == "any" || name == "unknown")
         return LBC_TYPE_ANY;
     else

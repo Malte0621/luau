@@ -10,8 +10,6 @@
 #include "ldebug.h"
 #include "lvm.h"
 
-LUAU_FASTFLAGVARIABLE(LuauFasterTableConcat, false)
-
 static int foreachi(lua_State* L)
 {
     luaL_checktype(L, 1, LUA_TTABLE);
@@ -219,17 +217,17 @@ static int tmove(lua_State* L)
     return 1;
 }
 
-static void addfield(lua_State* L, luaL_Buffer* b, int i)
+static void addfield(lua_State* L, luaL_Strbuf* b, int i)
 {
     int tt = lua_rawgeti(L, 1, i);
-    if (FFlag::LuauFasterTableConcat ? (tt != LUA_TSTRING && tt != LUA_TNUMBER) : !lua_isstring(L, -1))
+    if (tt != LUA_TSTRING && tt != LUA_TNUMBER)
         luaL_error(L, "invalid value (%s) at index %d in table for 'concat'", luaL_typename(L, -1), i);
     luaL_addvalue(b);
 }
 
 static int tconcat(lua_State* L)
 {
-    luaL_Buffer b;
+    luaL_Strbuf b;
     size_t lsep;
     int i, last;
     const char* sep = luaL_optlstring(L, 2, "", &lsep);
@@ -240,7 +238,7 @@ static int tconcat(lua_State* L)
     for (; i < last; i++)
     {
         addfield(L, &b, i);
-        luaL_addlstring(&b, sep, lsep, -1);
+        luaL_addlstring(&b, sep, lsep);
     }
     if (i == last) // add last value (if interval was not empty)
         addfield(L, &b, i);

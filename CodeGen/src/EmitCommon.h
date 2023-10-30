@@ -25,15 +25,15 @@ struct ModuleHelpers
     Label exitContinueVm;
     Label exitNoContinueVm;
     Label exitContinueVmClearNativeFlag;
-    Label updatePcAndContinueInVm;
+    Label updatePcAndContinueInVm; // no reentry
     Label return_;
     Label interrupt;
 
-    // X64
-    Label continueCallInVm;
-
     // A64
-    Label reentry; // x0: closure
+    Label continueCall; // x0: closure
+
+    unsigned bytecodeInstructionCount = 0;
+    unsigned preOptBlockCount = 0;
 };
 
 } // namespace CodeGen
