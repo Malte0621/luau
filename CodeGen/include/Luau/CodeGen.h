@@ -8,6 +8,14 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#ifdef min
+#undef min
+#endif
+
+#ifdef max
+#undef max
+#endif
+
 struct lua_State;
 
 namespace Luau
