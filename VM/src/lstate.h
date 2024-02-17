@@ -155,6 +155,7 @@ struct lua_ExecutionCallbacks
     void (*close)(lua_State* L);                 // called when global VM state is closed
     void (*destroy)(lua_State* L, Proto* proto); // called when function is destroyed
     int (*enter)(lua_State* L, Proto* proto);    // called when function is about to start/resume (when execdata is present), return 0 to exit VM
+    void (*disable)(lua_State* L, Proto* proto); // called when function has to be switched from native to bytecode in the debugger
 };
 
 /*
@@ -214,6 +215,8 @@ typedef struct global_State
     lua_ExecutionCallbacks ecb;
 
     void (*udatagc[LUA_UTAG_LIMIT])(lua_State*, void*); // for each userdata tag, a gc callback to be called immediately before freeing memory
+
+    TString* lightuserdataname[LUA_LUTAG_LIMIT]; // names for tagged lightuserdata
 
     GCStats gcstats;
 

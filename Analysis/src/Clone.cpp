@@ -12,9 +12,8 @@ LUAU_FASTFLAG(DebugLuauReadWriteProperties)
 
 LUAU_FASTFLAG(DebugLuauDeferredConstraintResolution)
 LUAU_FASTINTVARIABLE(LuauTypeCloneRecursionLimit, 300)
-LUAU_FASTFLAGVARIABLE(LuauCloneCyclicUnions, false)
 
-LUAU_FASTFLAGVARIABLE(LuauStacklessTypeClone2, false)
+LUAU_FASTFLAGVARIABLE(LuauStacklessTypeClone3, false)
 LUAU_FASTINTVARIABLE(LuauTypeCloneIterationLimit, 100'000)
 
 namespace Luau
@@ -118,6 +117,8 @@ private:
         ty = follow(ty, FollowOption::DisableLazyTypeThunks);
         if (auto it = types->find(ty); it != types->end())
             return it->second;
+        else if (ty->persistent)
+            return ty;
         return std::nullopt;
     }
 
@@ -126,6 +127,8 @@ private:
         tp = follow(tp);
         if (auto it = packs->find(tp); it != packs->end())
             return it->second;
+        else if (tp->persistent)
+            return tp;
         return std::nullopt;
     }
 
@@ -156,6 +159,15 @@ private:
         TypeId target = arena->addType(ty->ty);
         asMutable(target)->documentationSymbol = ty->documentationSymbol;
 
+        if (auto generic = getMutable<GenericType>(target))
+            generic->scope = nullptr;
+        else if (auto free = getMutable<FreeType>(target))
+            free->scope = nullptr;
+        else if (auto fn = getMutable<FunctionType>(target))
+            fn->scope = nullptr;
+        else if (auto table = getMutable<TableType>(target))
+            table->scope = nullptr;
+
         (*types)[ty] = target;
         queue.push_back(target);
         return target;
@@ -171,6 +183,11 @@ private:
             return tp;
 
         TypePackId target = arena->addTypePack(tp->ty);
+
+        if (auto generic = getMutable<GenericTypePack>(target))
+            generic->scope = nullptr;
+        else if (auto free = getMutable<FreeTypePack>(target))
+            free->scope = nullptr;
 
         (*packs)[tp] = target;
         queue.push_back(target);
@@ -196,6 +213,7 @@ private:
             cloned->location = p.location;
             cloned->tags = p.tags;
             cloned->documentationSymbol = p.documentationSymbol;
+            cloned->typeLocation = p.typeLocation;
             return *cloned;
         }
         else
@@ -207,6 +225,7 @@ private:
                 p.location,
                 p.tags,
                 p.documentationSymbol,
+                p.typeLocation,
             };
         }
     }
@@ -256,6 +275,11 @@ private:
             t->lowerBound = shallowClone(t->lowerBound);
         if (t->upperBound)
             t->upperBound = shallowClone(t->upperBound);
+    }
+
+    void cloneChildren(LocalType* t)
+    {
+        t->domain = shallowClone(t->domain);
     }
 
     void cloneChildren(GenericType* t)
@@ -453,6 +477,7 @@ Property clone(const Property& prop, TypeArena& dest, CloneState& cloneState)
         cloned->location = prop.location;
         cloned->tags = prop.tags;
         cloned->documentationSymbol = prop.documentationSymbol;
+        cloned->typeLocation = prop.typeLocation;
         return *cloned;
     }
     else
@@ -464,6 +489,7 @@ Property clone(const Property& prop, TypeArena& dest, CloneState& cloneState)
             prop.location,
             prop.tags,
             prop.documentationSymbol,
+            prop.typeLocation,
         };
     }
 }
@@ -501,6 +527,7 @@ struct TypeCloner
     void defaultClone(const T& t);
 
     void operator()(const FreeType& t);
+    void operator()(const LocalType& t);
     void operator()(const GenericType& t);
     void operator()(const BoundType& t);
     void operator()(const ErrorType& t);
@@ -550,10 +577,12 @@ struct TypePackCloner
     {
         defaultClone(t);
     }
+
     void operator()(const GenericTypePack& t)
     {
         defaultClone(t);
     }
+
     void operator()(const ErrorTypePack& t)
     {
         defaultClone(t);
@@ -620,12 +649,17 @@ void TypeCloner::operator()(const FreeType& t)
 {
     if (FFlag::DebugLuauDeferredConstraintResolution)
     {
-        FreeType ft{t.scope, clone(t.lowerBound, dest, cloneState), clone(t.upperBound, dest, cloneState)};
+        FreeType ft{nullptr, clone(t.lowerBound, dest, cloneState), clone(t.upperBound, dest, cloneState)};
         TypeId res = dest.addType(ft);
         seenTypes[typeId] = res;
     }
     else
         defaultClone(t);
+}
+
+void TypeCloner::operator()(const LocalType& t)
+{
+    defaultClone(t);
 }
 
 void TypeCloner::operator()(const GenericType& t)
@@ -778,33 +812,19 @@ void TypeCloner::operator()(const AnyType& t)
 
 void TypeCloner::operator()(const UnionType& t)
 {
-    if (FFlag::LuauCloneCyclicUnions)
-    {
-        // We're just using this FreeType as a placeholder until we've finished
-        // cloning the parts of this union so it is okay that its bounds are
-        // nullptr.  We'll never indirect them.
-        TypeId result = dest.addType(FreeType{nullptr, /*lowerBound*/ nullptr, /*upperBound*/ nullptr});
-        seenTypes[typeId] = result;
+    // We're just using this FreeType as a placeholder until we've finished
+    // cloning the parts of this union so it is okay that its bounds are
+    // nullptr.  We'll never indirect them.
+    TypeId result = dest.addType(FreeType{nullptr, /*lowerBound*/ nullptr, /*upperBound*/ nullptr});
+    seenTypes[typeId] = result;
 
-        std::vector<TypeId> options;
-        options.reserve(t.options.size());
+    std::vector<TypeId> options;
+    options.reserve(t.options.size());
 
-        for (TypeId ty : t.options)
-            options.push_back(clone(ty, dest, cloneState));
+    for (TypeId ty : t.options)
+        options.push_back(clone(ty, dest, cloneState));
 
-        asMutable(result)->ty.emplace<UnionType>(std::move(options));
-    }
-    else
-    {
-        std::vector<TypeId> options;
-        options.reserve(t.options.size());
-
-        for (TypeId ty : t.options)
-            options.push_back(clone(ty, dest, cloneState));
-
-        TypeId result = dest.addType(UnionType{std::move(options)});
-        seenTypes[typeId] = result;
-    }
+    asMutable(result)->ty.emplace<UnionType>(std::move(options));
 }
 
 void TypeCloner::operator()(const IntersectionType& t)
@@ -879,7 +899,7 @@ TypePackId clone(TypePackId tp, TypeArena& dest, CloneState& cloneState)
     if (tp->persistent)
         return tp;
 
-    if (FFlag::LuauStacklessTypeClone2)
+    if (FFlag::LuauStacklessTypeClone3)
     {
         TypeCloner2 cloner{NotNull{&dest}, cloneState.builtinTypes, NotNull{&cloneState.seenTypes}, NotNull{&cloneState.seenTypePacks}};
         return cloner.clone(tp);
@@ -905,7 +925,7 @@ TypeId clone(TypeId typeId, TypeArena& dest, CloneState& cloneState)
     if (typeId->persistent)
         return typeId;
 
-    if (FFlag::LuauStacklessTypeClone2)
+    if (FFlag::LuauStacklessTypeClone3)
     {
         TypeCloner2 cloner{NotNull{&dest}, cloneState.builtinTypes, NotNull{&cloneState.seenTypes}, NotNull{&cloneState.seenTypePacks}};
         return cloner.clone(typeId);
@@ -934,7 +954,7 @@ TypeId clone(TypeId typeId, TypeArena& dest, CloneState& cloneState)
 
 TypeFun clone(const TypeFun& typeFun, TypeArena& dest, CloneState& cloneState)
 {
-    if (FFlag::LuauStacklessTypeClone2)
+    if (FFlag::LuauStacklessTypeClone3)
     {
         TypeCloner2 cloner{NotNull{&dest}, cloneState.builtinTypes, NotNull{&cloneState.seenTypes}, NotNull{&cloneState.seenTypePacks}};
 

@@ -50,6 +50,7 @@ struct IrLoweringX64
     OperandX64 memRegUintOp(IrOp op);
     OperandX64 memRegTagOp(IrOp op);
     RegisterX64 regOp(IrOp op);
+    OperandX64 bufferAddrOp(IrOp bufferOp, IrOp indexOp);
 
     IrConst constOp(IrOp op) const;
     uint8_t tagOp(IrOp op) const;
@@ -59,6 +60,9 @@ struct IrLoweringX64
 
     IrBlock& blockOp(IrOp op) const;
     Label& labelOp(IrOp op) const;
+
+    OperandX64 vectorAndMaskOp();
+    OperandX64 vectorOrMaskOp();
 
     struct InterruptHandler
     {
@@ -86,6 +90,9 @@ struct IrLoweringX64
     std::vector<InterruptHandler> interruptHandlers;
     std::vector<ExitHandler> exitHandlers;
     DenseHashMap<uint32_t, uint32_t> exitHandlerMap;
+
+    OperandX64 vectorAndMask = noreg;
+    OperandX64 vectorOrMask = noreg;
 };
 
 } // namespace X64

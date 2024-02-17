@@ -16,8 +16,28 @@ using namespace Luau;
 
 LUAU_FASTFLAG(LuauInstantiateInSubtyping);
 LUAU_FASTFLAG(DebugLuauDeferredConstraintResolution);
+LUAU_FASTFLAG(LuauAlwaysCommitInferencesOfFunctionCalls);
+LUAU_FASTINT(LuauTarjanChildLimit);
 
 TEST_SUITE_BEGIN("TypeInferFunctions");
+
+TEST_CASE_FIXTURE(Fixture, "overload_resolution")
+{
+    CheckResult result = check(R"(
+        type A = (number) -> string
+        type B = (string) -> number
+
+        local function foo(f: A & B)
+            return f(1), f("five")
+        end
+    )");
+    LUAU_REQUIRE_NO_ERRORS(result);
+    TypeId t = requireType("foo");
+    const FunctionType* fooType = get<FunctionType>(requireType("foo"));
+    REQUIRE(fooType != nullptr);
+
+    CHECK(toString(t) == "(((number) -> string) & ((string) -> number)) -> (string, number)");
+}
 
 TEST_CASE_FIXTURE(Fixture, "tc_function")
 {
@@ -30,13 +50,30 @@ TEST_CASE_FIXTURE(Fixture, "tc_function")
 
 TEST_CASE_FIXTURE(Fixture, "check_function_bodies")
 {
-    CheckResult result = check("function myFunction()    local a = 0    a = true    end");
+    CheckResult result = check(R"(
+        function myFunction(): number
+            local a = 0
+            a = true
+            return a
+        end
+    )");
+
     LUAU_REQUIRE_ERROR_COUNT(1, result);
 
-    CHECK_EQ(result.errors[0], (TypeError{Location{Position{0, 44}, Position{0, 48}}, TypeMismatch{
-                                                                                          builtinTypes->numberType,
-                                                                                          builtinTypes->booleanType,
-                                                                                      }}));
+    if (FFlag::DebugLuauDeferredConstraintResolution)
+    {
+        const TypePackMismatch* tm = get<TypePackMismatch>(result.errors[0]);
+        REQUIRE(tm);
+        CHECK(toString(tm->wantedTp) == "number");
+        CHECK(toString(tm->givenTp) == "boolean");
+    }
+    else
+    {
+        CHECK_EQ(result.errors[0], (TypeError{Location{Position{3, 16}, Position{3, 20}}, TypeMismatch{
+                                                                                              builtinTypes->numberType,
+                                                                                              builtinTypes->booleanType,
+                                                                                          }}));
+    }
 }
 
 TEST_CASE_FIXTURE(Fixture, "cannot_hoist_interior_defns_into_signature")
@@ -734,7 +771,6 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "mutual_recursion")
     )");
 
     LUAU_REQUIRE_NO_ERRORS(result);
-    dumpErrors(result);
 }
 
 TEST_CASE_FIXTURE(BuiltinsFixture, "toposort_doesnt_break_mutual_recursion")
@@ -1285,7 +1321,7 @@ TEST_CASE_FIXTURE(Fixture, "variadic_any_is_compatible_with_a_generic_TypePack")
     LUAU_REQUIRE_NO_ERRORS(result);
 }
 
-// https://github.com/Roblox/luau/issues/767
+// https://github.com/luau-lang/luau/issues/767
 TEST_CASE_FIXTURE(BuiltinsFixture, "variadic_any_is_compatible_with_a_generic_TypePack_2")
 {
     CheckResult result = check(R"(
@@ -1911,7 +1947,7 @@ end
 
 TEST_CASE_FIXTURE(BuiltinsFixture, "dont_assert_when_the_tarjan_limit_is_exceeded_during_generalization")
 {
-    ScopedFastInt sfi{"LuauTarjanChildLimit", 2};
+    ScopedFastInt sfi{FInt::LuauTarjanChildLimit, 2};
     if (!FFlag::DebugLuauDeferredConstraintResolution)
         return;
 
@@ -1995,7 +2031,7 @@ TEST_CASE_FIXTURE(Fixture, "function_exprs_are_generalized_at_signature_scope_no
 TEST_CASE_FIXTURE(BuiltinsFixture, "param_1_and_2_both_takes_the_same_generic_but_their_arguments_are_incompatible")
 {
     ScopedFastFlag sff[] = {
-        {"LuauAlwaysCommitInferencesOfFunctionCalls", true},
+        {FFlag::LuauAlwaysCommitInferencesOfFunctionCalls, true},
     };
 
     CheckResult result = check(R"(
@@ -2050,7 +2086,7 @@ Table type '{ x: number }' not compatible with type 'vec2' because the former is
 
 TEST_CASE_FIXTURE(BuiltinsFixture, "param_1_and_2_both_takes_the_same_generic_but_their_arguments_are_incompatible_2")
 {
-    ScopedFastFlag sff{"LuauAlwaysCommitInferencesOfFunctionCalls", true};
+    ScopedFastFlag sff{FFlag::LuauAlwaysCommitInferencesOfFunctionCalls, true};
 
     CheckResult result = check(R"(
         local function f<a>(x: a, y: a): a
@@ -2103,7 +2139,7 @@ TEST_CASE_FIXTURE(Fixture, "generic_packs_are_not_variadic")
     if (!FFlag::DebugLuauDeferredConstraintResolution)
         return;
 
-    ScopedFastFlag sff{"DebugLuauDeferredConstraintResolution", true};
+    ScopedFastFlag sff{FFlag::DebugLuauDeferredConstraintResolution, true};
 
     CheckResult result = check(R"(
         local function apply<a, b..., c...>(f: (a, b...) -> c..., x: a)
@@ -2137,7 +2173,11 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "num_is_solved_before_num_or_str")
     )");
 
     LUAU_REQUIRE_ERROR_COUNT(1, result);
-    CHECK_EQ("Type 'string' could not be converted into 'number'", toString(result.errors[0]));
+    if (FFlag::DebugLuauDeferredConstraintResolution)
+        CHECK(toString(result.errors.at(0)) == "Type pack 'string' could not be converted into 'number'; at [0], string is not a subtype of number");
+    else
+        CHECK_EQ("Type 'string' could not be converted into 'number'", toString(result.errors[0]));
+
     CHECK_EQ("() -> number", toString(requireType("num_or_str")));
 }
 
@@ -2158,7 +2198,10 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "num_is_solved_after_num_or_str")
     )");
 
     LUAU_REQUIRE_ERROR_COUNT(1, result);
-    CHECK_EQ("Type 'string' could not be converted into 'number'", toString(result.errors[0]));
+    if (FFlag::DebugLuauDeferredConstraintResolution)
+        CHECK(toString(result.errors.at(0)) == "Type pack 'string' could not be converted into 'number'; at [0], string is not a subtype of number");
+    else
+        CHECK_EQ("Type 'string' could not be converted into 'number'", toString(result.errors[0]));
     CHECK_EQ("() -> number", toString(requireType("num_or_str")));
 }
 
@@ -2173,6 +2216,97 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "apply_of_lambda_with_inferred_and_explicit_t
     )");
 
     LUAU_REQUIRE_NO_ERRORS(result);
+}
+
+TEST_CASE_FIXTURE(BuiltinsFixture, "regex_benchmark_string_format_minimization")
+{
+    CheckResult result = check(R"(
+        (nil :: any)(function(n)
+            if tonumber(n) then
+                n = tonumber(n)
+            elseif n ~= nil then
+                string.format("invalid argument #4 to 'sub': number expected, got %s", typeof(n))
+            end
+        end);
+    )");
+
+    LUAU_REQUIRE_NO_ERRORS(result);
+}
+
+TEST_CASE_FIXTURE(BuiltinsFixture, "subgeneric_typefamily_super_monomorphic")
+{
+    CheckResult result = check(R"(
+local a: (number, number) -> number = function(a, b) return a - b end
+
+a = function(a, b) return a + b end
+)");
+
+    LUAU_REQUIRE_NO_ERRORS(result);
+}
+
+TEST_CASE_FIXTURE(BuiltinsFixture, "simple_unannotated_mutual_recursion")
+{
+    CheckResult result = check(R"(
+function even(n)
+    if n == 0 then
+        return true
+    else
+        return odd(n - 1)
+    end
+end
+
+function odd(n)
+    if n == 0 then
+        return false
+    elseif n == 1 then
+        return true
+    else
+        return even(n - 1)
+    end
+end
+)");
+
+    if (FFlag::DebugLuauDeferredConstraintResolution)
+    {
+        LUAU_REQUIRE_ERROR_COUNT(4, result);
+        CHECK(toString(result.errors[0]) == "Type family instance sub<unknown, number> is uninhabited");
+        CHECK(toString(result.errors[1]) == "Type family instance sub<unknown, number> is uninhabited");
+        CHECK(toString(result.errors[2]) == "Type family instance sub<unknown, number> is uninhabited");
+        CHECK(toString(result.errors[3]) == "Type family instance sub<unknown, number> is uninhabited");
+    }
+    else
+    {
+        LUAU_REQUIRE_ERROR_COUNT(1, result);
+        CHECK(toString(result.errors[0]) == "Unknown type used in - operation; consider adding a type annotation to 'n'");
+    }
+}
+
+TEST_CASE_FIXTURE(BuiltinsFixture, "simple_lightly_annotated_mutual_recursion")
+{
+    CheckResult result = check(R"(
+function even(n: number)
+    if n == 0 then
+        return true
+    else
+        return odd(n - 1)
+    end
+end
+
+function odd(n: number)
+    if n == 0 then
+        return false
+    elseif n == 1 then
+        return true
+    else
+        return even(n - 1)
+    end
+end
+)");
+
+    LUAU_REQUIRE_NO_ERRORS(result);
+
+    CHECK_EQ("(number) -> boolean", toString(requireType("even")));
+    CHECK_EQ("(number) -> boolean", toString(requireType("odd")));
 }
 
 TEST_SUITE_END();

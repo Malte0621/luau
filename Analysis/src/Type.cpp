@@ -11,6 +11,7 @@
 #include "Luau/ToString.h"
 #include "Luau/TypeInfer.h"
 #include "Luau/TypePack.h"
+#include "Luau/VecDeque.h"
 #include "Luau/VisitType.h"
 
 #include <algorithm>
@@ -26,7 +27,6 @@ LUAU_FASTINTVARIABLE(LuauTableTypeMaximumStringifierLength, 0)
 LUAU_FASTINT(LuauTypeInferRecursionLimit)
 LUAU_FASTFLAG(LuauInstantiateInSubtyping)
 LUAU_FASTFLAG(DebugLuauReadWriteProperties)
-LUAU_FASTFLAGVARIABLE(LuauInitializeStringMetatableInGlobalTypes, false)
 
 namespace Luau
 {
@@ -128,7 +128,7 @@ std::vector<TypeId> flattenIntersection(TypeId ty)
         return {ty};
 
     std::unordered_set<TypeId> seen;
-    std::deque<TypeId> queue{ty};
+    VecDeque<TypeId> queue{ty};
 
     std::vector<TypeId> result;
 
@@ -214,6 +214,11 @@ bool isThread(TypeId ty)
     return isPrim(ty, PrimitiveType::Thread);
 }
 
+bool isBuffer(TypeId ty)
+{
+    return isPrim(ty, PrimitiveType::Buffer);
+}
+
 bool isOptional(TypeId ty)
 {
     if (isNil(ty))
@@ -238,6 +243,15 @@ bool isTableIntersection(TypeId ty)
 
     std::vector<TypeId> parts = flattenIntersection(ty);
     return std::all_of(parts.begin(), parts.end(), getTableType);
+}
+
+bool isTableUnion(TypeId ty)
+{
+    const UnionType* ut = get<UnionType>(follow(ty));
+    if (!ut)
+        return false;
+
+    return std::all_of(begin(ut), end(ut), getTableType);
 }
 
 bool isOverloadedFunction(TypeId ty)
@@ -404,6 +418,10 @@ bool maybeSingleton(TypeId ty)
     if (const UnionType* utv = get<UnionType>(ty))
         for (TypeId option : utv)
             if (get<SingletonType>(follow(option)))
+                return true;
+    if (const IntersectionType* itv = get<IntersectionType>(ty))
+        for (TypeId part : itv)
+            if (maybeSingleton(part)) // will i regret this?
                 return true;
     return false;
 }
@@ -604,10 +622,11 @@ FunctionType::FunctionType(TypeLevel level, Scope* scope, std::vector<TypeId> ge
 Property::Property() {}
 
 Property::Property(TypeId readTy, bool deprecated, const std::string& deprecatedSuggestion, std::optional<Location> location, const Tags& tags,
-    const std::optional<std::string>& documentationSymbol)
+    const std::optional<std::string>& documentationSymbol, std::optional<Location> typeLocation)
     : deprecated(deprecated)
     , deprecatedSuggestion(deprecatedSuggestion)
     , location(location)
+    , typeLocation(typeLocation)
     , tags(tags)
     , documentationSymbol(documentationSymbol)
     , readTy(readTy)
@@ -925,6 +944,7 @@ BuiltinTypes::BuiltinTypes()
     , stringType(arena->addType(Type{PrimitiveType{PrimitiveType::String}, /*persistent*/ true}))
     , booleanType(arena->addType(Type{PrimitiveType{PrimitiveType::Boolean}, /*persistent*/ true}))
     , threadType(arena->addType(Type{PrimitiveType{PrimitiveType::Thread}, /*persistent*/ true}))
+    , bufferType(arena->addType(Type{PrimitiveType{PrimitiveType::Buffer}, /*persistent*/ true}))
     , functionType(arena->addType(Type{PrimitiveType{PrimitiveType::Function}, /*persistent*/ true}))
     , classType(arena->addType(Type{ClassType{"class", {}, std::nullopt, std::nullopt, {}, {}, {}}, /*persistent*/ true}))
     , tableType(arena->addType(Type{PrimitiveType{PrimitiveType::Table}, /*persistent*/ true}))
@@ -945,13 +965,6 @@ BuiltinTypes::BuiltinTypes()
     , uninhabitableTypePack(arena->addTypePack(TypePackVar{TypePack{{neverType}, neverTypePack}, /*persistent*/ true}))
     , errorTypePack(arena->addTypePack(TypePackVar{Unifiable::Error{}, /*persistent*/ true}))
 {
-    if (!FFlag::LuauInitializeStringMetatableInGlobalTypes)
-    {
-        TypeId stringMetatable = makeStringMetatable(NotNull{this});
-        asMutable(stringType)->ty = PrimitiveType{PrimitiveType::String, stringMetatable};
-        persist(stringMetatable);
-    }
-
     freeze(*arena);
 }
 
@@ -989,7 +1002,7 @@ TypePackId BuiltinTypes::errorRecoveryTypePack(TypePackId guess) const
 
 void persist(TypeId ty)
 {
-    std::deque<TypeId> queue{ty};
+    VecDeque<TypeId> queue{ty};
 
     while (!queue.empty())
     {

@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <string>
+#include <vector>
 
 #include <stddef.h>
 #include <stdint.h>
@@ -22,14 +23,21 @@ enum CodeGenFlags
     CodeGen_ColdFunctions = 1 << 1,
 };
 
+// These enum values can be reported through telemetry.
+// To ensure consistency, changes should be additive.
 enum class CodeGenCompilationResult
 {
-    Success,          // Successfully generated code for at least one function
-    NothingToCompile, // There were no new functions to compile
+    Success = 0,          // Successfully generated code for at least one function
+    NothingToCompile = 1, // There were no new functions to compile
+    NotNativeModule = 2,  // Module does not have `--!native` comment
 
-    CodeGenNotInitialized, // Native codegen system is not initialized
-    CodeGenFailed,         // Native codegen failed due to an internal compiler error
-    AllocationFailed,      // Native codegen failed due to an allocation error
+    CodeGenNotInitialized = 3,                // Native codegen system is not initialized
+    CodeGenOverflowInstructionLimit = 4,      // Instruction limit overflow
+    CodeGenOverflowBlockLimit = 5,            // Block limit overflow
+    CodeGenOverflowBlockInstructionLimit = 6, // Block instruction limit overflow
+    CodeGenAssemblerFinalizationFailure = 7,  // Failure during assembler finalization
+    CodeGenLoweringFailure = 8,               // Lowering failed
+    AllocationFailed = 9,                     // Native codegen failed due to an allocation error
 };
 
 struct CompilationStats
@@ -39,6 +47,7 @@ struct CompilationStats
     size_t nativeDataSizeBytes = 0;
     size_t nativeMetadataSizeBytes = 0;
 
+    uint32_t functionsTotal = 0;
     uint32_t functionsCompiled = 0;
 };
 
@@ -53,6 +62,34 @@ void create(lua_State* L);
 CodeGenCompilationResult compile(lua_State* L, int idx, unsigned int flags = 0, CompilationStats* stats = nullptr);
 
 using AnnotatorFn = void (*)(void* context, std::string& result, int fid, int instpos);
+
+// Output "#" before IR blocks and instructions
+enum class IncludeIrPrefix
+{
+    No,
+    Yes
+};
+
+// Output user count and last use information of blocks and instructions
+enum class IncludeUseInfo
+{
+    No,
+    Yes
+};
+
+// Output CFG informations like block predecessors, successors and etc
+enum class IncludeCfgInfo
+{
+    No,
+    Yes
+};
+
+// Output VM register live in/out information for blocks
+enum class IncludeRegFlowInfo
+{
+    No,
+    Yes
+};
 
 struct AssemblyOptions
 {
@@ -75,9 +112,54 @@ struct AssemblyOptions
     bool includeIr = false;
     bool includeOutlinedCode = false;
 
+    IncludeIrPrefix includeIrPrefix = IncludeIrPrefix::Yes;
+    IncludeUseInfo includeUseInfo = IncludeUseInfo::Yes;
+    IncludeCfgInfo includeCfgInfo = IncludeCfgInfo::Yes;
+    IncludeRegFlowInfo includeRegFlowInfo = IncludeRegFlowInfo::Yes;
+
     // Optional annotator function can be provided to describe each instruction, it takes function id and sequential instruction id
     AnnotatorFn annotator = nullptr;
     void* annotatorContext = nullptr;
+};
+
+struct BlockLinearizationStats
+{
+    unsigned int constPropInstructionCount = 0;
+    double timeSeconds = 0.0;
+
+    BlockLinearizationStats& operator+=(const BlockLinearizationStats& that)
+    {
+        this->constPropInstructionCount += that.constPropInstructionCount;
+        this->timeSeconds += that.timeSeconds;
+
+        return *this;
+    }
+
+    BlockLinearizationStats operator+(const BlockLinearizationStats& other) const
+    {
+        BlockLinearizationStats result(*this);
+        result += other;
+        return result;
+    }
+};
+
+enum FunctionStatsFlags
+{
+    // Enable stats collection per function
+    FunctionStats_Enable = 1 << 0,
+    // Compute function bytecode summary
+    FunctionStats_BytecodeSummary = 1 << 1,
+};
+
+struct FunctionStats
+{
+    std::string name;
+    int line = -1;
+    unsigned bcodeCount = 0;
+    unsigned irCount = 0;
+    unsigned asmCount = 0;
+    unsigned asmSize = 0;
+    std::vector<std::vector<unsigned>> bytecodeSummary;
 };
 
 struct LoweringStats
@@ -93,6 +175,11 @@ struct LoweringStats
 
     int regAllocErrors = 0;
     int loweringErrors = 0;
+
+    BlockLinearizationStats blockLinearizationStats;
+
+    unsigned functionStatsFlags = 0;
+    std::vector<FunctionStats> functions;
 
     LoweringStats operator+(const LoweringStats& other) const
     {
@@ -113,6 +200,9 @@ struct LoweringStats
         this->maxBlockInstructions = std::max(this->maxBlockInstructions, that.maxBlockInstructions);
         this->regAllocErrors += that.regAllocErrors;
         this->loweringErrors += that.loweringErrors;
+        this->blockLinearizationStats += that.blockLinearizationStats;
+        if (this->functionStatsFlags & FunctionStats_Enable)
+            this->functions.insert(this->functions.end(), that.functions.begin(), that.functions.end());
         return *this;
     }
 };

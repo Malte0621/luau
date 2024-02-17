@@ -10,6 +10,8 @@
 
 LUAU_FASTINTVARIABLE(LuauTarjanChildLimit, 10000)
 LUAU_FASTFLAG(DebugLuauReadWriteProperties)
+LUAU_FASTFLAGVARIABLE(LuauPreallocateTarjanVectors, false);
+LUAU_FASTINTVARIABLE(LuauTarjanPreallocationSize, 256);
 
 namespace Luau
 {
@@ -19,7 +21,11 @@ static TypeId shallowClone(TypeId ty, TypeArena& dest, const TxnLog* log, bool a
     auto go = [ty, &dest, alwaysClone](auto&& a) {
         using T = std::decay_t<decltype(a)>;
 
+        // The pointer identities of free and local types is very important.
+        // We decline to copy them.
         if constexpr (std::is_same_v<T, FreeType>)
+            return ty;
+        else if constexpr (std::is_same_v<T, LocalType>)
             return ty;
         else if constexpr (std::is_same_v<T, BoundType>)
         {
@@ -140,6 +146,18 @@ static TypeId shallowClone(TypeId ty, TypeArena& dest, const TxnLog* log, bool a
         asMutable(resTy)->documentationSymbol = ty->documentationSymbol;
 
     return resTy;
+}
+
+Tarjan::Tarjan()
+{
+    if (FFlag::LuauPreallocateTarjanVectors)
+    {
+        nodes.reserve(FInt::LuauTarjanPreallocationSize);
+        stack.reserve(FInt::LuauTarjanPreallocationSize);
+        edgesTy.reserve(FInt::LuauTarjanPreallocationSize);
+        edgesTp.reserve(FInt::LuauTarjanPreallocationSize);
+        worklist.reserve(FInt::LuauTarjanPreallocationSize);
+    }
 }
 
 void Tarjan::visitChildren(TypeId ty, int index)

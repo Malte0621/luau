@@ -36,8 +36,7 @@ static int buffer_create(lua_State* L)
 {
     int size = luaL_checkinteger(L, 1);
 
-    if (size < 0)
-        luaL_error(L, "size cannot be negative");
+    luaL_argcheck(L, size >= 0, 1, "size");
 
     lua_newbuffer(L, size);
     return 1;
@@ -165,8 +164,7 @@ static int buffer_readstring(lua_State* L)
     int offset = luaL_checkinteger(L, 2);
     int size = luaL_checkinteger(L, 3);
 
-    if (size < 0)
-        luaL_error(L, "size cannot be negative");
+    luaL_argcheck(L, size >= 0, 3, "size");
 
     if (isoutofbounds(offset, len, unsigned(size)))
         luaL_error(L, "buffer access out of bounds");
@@ -184,8 +182,7 @@ static int buffer_writestring(lua_State* L)
     const char* val = luaL_checklstring(L, 3, &size);
     int count = luaL_optinteger(L, 4, int(size));
 
-    if (count < 0)
-        luaL_error(L, "count cannot be negative");
+    luaL_argcheck(L, count >= 0, 4, "count");
 
     if (size_t(count) > size)
         luaL_error(L, "string length overflow");

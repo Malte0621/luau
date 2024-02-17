@@ -5,6 +5,7 @@
 #include "Luau/BuiltinDefinitions.h"
 #include "Luau/Frontend.h"
 #include "Luau/ToString.h"
+#include "Luau/Subtyping.h"
 #include "Luau/TypeInfer.h"
 #include "Luau/TypePack.h"
 
@@ -12,10 +13,10 @@
 #include <unordered_set>
 #include <utility>
 
+LUAU_FASTFLAG(DebugLuauDeferredConstraintResolution);
 LUAU_FASTFLAG(DebugLuauReadWriteProperties);
-LUAU_FASTFLAG(LuauClipExtraHasEndProps);
-LUAU_FASTFLAGVARIABLE(LuauAutocompleteDoEnd, false);
 LUAU_FASTFLAGVARIABLE(LuauAutocompleteStringLiteralBounds, false);
+LUAU_FASTFLAGVARIABLE(LuauAutocompleteTableKeysNoInitialCharacter, false);
 
 static const std::unordered_set<std::string> kStatementStartingKeywords = {
     "while", "if", "local", "repeat", "function", "do", "for", "return", "break", "continue", "type", "export"};
@@ -143,13 +144,23 @@ static bool checkTypeMatch(TypeId subTy, TypeId superTy, NotNull<Scope> scope, T
     InternalErrorReporter iceReporter;
     UnifierSharedState unifierState(&iceReporter);
     Normalizer normalizer{typeArena, builtinTypes, NotNull{&unifierState}};
-    Unifier unifier(NotNull<Normalizer>{&normalizer}, scope, Location(), Variance::Covariant);
 
-    // Cost of normalization can be too high for autocomplete response time requirements
-    unifier.normalize = false;
-    unifier.checkInhabited = false;
+    if (FFlag::DebugLuauDeferredConstraintResolution)
+    {
+        Subtyping subtyping{builtinTypes, NotNull{typeArena}, NotNull{&normalizer}, NotNull{&iceReporter}, scope};
 
-    return unifier.canUnify(subTy, superTy).empty();
+        return subtyping.isSubtype(subTy, superTy).isSubtype;
+    }
+    else
+    {
+        Unifier unifier(NotNull<Normalizer>{&normalizer}, scope, Location(), Variance::Covariant);
+
+        // Cost of normalization can be too high for autocomplete response time requirements
+        unifier.normalize = false;
+        unifier.checkInhabited = false;
+
+        return unifier.canUnify(subTy, superTy).empty();
+    }
 }
 
 static TypeCorrectKind checkTypeCorrectKind(
@@ -1056,57 +1067,30 @@ static AutocompleteEntryMap autocompleteStatement(
     for (const auto& kw : kStatementStartingKeywords)
         result.emplace(kw, AutocompleteEntry{AutocompleteEntryKind::Keyword});
 
-    if (FFlag::LuauClipExtraHasEndProps)
+    for (auto it = ancestry.rbegin(); it != ancestry.rend(); ++it)
     {
-        for (auto it = ancestry.rbegin(); it != ancestry.rend(); ++it)
+        if (AstStatForIn* statForIn = (*it)->as<AstStatForIn>(); statForIn && !statForIn->body->hasEnd)
+            result.emplace("end", AutocompleteEntry{AutocompleteEntryKind::Keyword});
+        else if (AstStatFor* statFor = (*it)->as<AstStatFor>(); statFor && !statFor->body->hasEnd)
+            result.emplace("end", AutocompleteEntry{AutocompleteEntryKind::Keyword});
+        else if (AstStatIf* statIf = (*it)->as<AstStatIf>())
         {
-            if (AstStatForIn* statForIn = (*it)->as<AstStatForIn>(); statForIn && !statForIn->body->hasEnd)
-                result.emplace("end", AutocompleteEntry{AutocompleteEntryKind::Keyword});
-            else if (AstStatFor* statFor = (*it)->as<AstStatFor>(); statFor && !statFor->body->hasEnd)
-                result.emplace("end", AutocompleteEntry{AutocompleteEntryKind::Keyword});
-            else if (AstStatIf* statIf = (*it)->as<AstStatIf>())
+            bool hasEnd = statIf->thenbody->hasEnd;
+            if (statIf->elsebody)
             {
-                bool hasEnd = statIf->thenbody->hasEnd;
-                if (statIf->elsebody)
-                {
-                    if (AstStatBlock* elseBlock = statIf->elsebody->as<AstStatBlock>())
-                        hasEnd = elseBlock->hasEnd;
-                }
+                if (AstStatBlock* elseBlock = statIf->elsebody->as<AstStatBlock>())
+                    hasEnd = elseBlock->hasEnd;
+            }
 
-                if (!hasEnd)
-                    result.emplace("end", AutocompleteEntry{AutocompleteEntryKind::Keyword});
-            }
-            else if (AstStatWhile* statWhile = (*it)->as<AstStatWhile>(); statWhile && !statWhile->body->hasEnd)
+            if (!hasEnd)
                 result.emplace("end", AutocompleteEntry{AutocompleteEntryKind::Keyword});
-            else if (AstExprFunction* exprFunction = (*it)->as<AstExprFunction>(); exprFunction && !exprFunction->body->hasEnd)
-                result.emplace("end", AutocompleteEntry{AutocompleteEntryKind::Keyword});
-            if (FFlag::LuauAutocompleteDoEnd)
-            {
-                if (AstStatBlock* exprBlock = (*it)->as<AstStatBlock>(); exprBlock && !exprBlock->hasEnd)
-                    result.emplace("end", AutocompleteEntry{AutocompleteEntryKind::Keyword});
-            }
         }
-    }
-    else
-    {
-        for (auto it = ancestry.rbegin(); it != ancestry.rend(); ++it)
-        {
-            if (AstStatForIn* statForIn = (*it)->as<AstStatForIn>(); statForIn && !statForIn->DEPRECATED_hasEnd)
-                result.emplace("end", AutocompleteEntry{AutocompleteEntryKind::Keyword});
-            else if (AstStatFor* statFor = (*it)->as<AstStatFor>(); statFor && !statFor->DEPRECATED_hasEnd)
-                result.emplace("end", AutocompleteEntry{AutocompleteEntryKind::Keyword});
-            else if (AstStatIf* statIf = (*it)->as<AstStatIf>(); statIf && !statIf->DEPRECATED_hasEnd)
-                result.emplace("end", AutocompleteEntry{AutocompleteEntryKind::Keyword});
-            else if (AstStatWhile* statWhile = (*it)->as<AstStatWhile>(); statWhile && !statWhile->DEPRECATED_hasEnd)
-                result.emplace("end", AutocompleteEntry{AutocompleteEntryKind::Keyword});
-            else if (AstExprFunction* exprFunction = (*it)->as<AstExprFunction>(); exprFunction && !exprFunction->DEPRECATED_hasEnd)
-                result.emplace("end", AutocompleteEntry{AutocompleteEntryKind::Keyword});
-            if (FFlag::LuauAutocompleteDoEnd)
-            {
-                if (AstStatBlock* exprBlock = (*it)->as<AstStatBlock>(); exprBlock && !exprBlock->hasEnd)
-                    result.emplace("end", AutocompleteEntry{AutocompleteEntryKind::Keyword});
-            }
-        }
+        else if (AstStatWhile* statWhile = (*it)->as<AstStatWhile>(); statWhile && !statWhile->body->hasEnd)
+            result.emplace("end", AutocompleteEntry{AutocompleteEntryKind::Keyword});
+        else if (AstExprFunction* exprFunction = (*it)->as<AstExprFunction>(); exprFunction && !exprFunction->body->hasEnd)
+            result.emplace("end", AutocompleteEntry{AutocompleteEntryKind::Keyword});
+        if (AstStatBlock* exprBlock = (*it)->as<AstStatBlock>(); exprBlock && !exprBlock->hasEnd)
+            result.emplace("end", AutocompleteEntry{AutocompleteEntryKind::Keyword});
     }
 
     if (ancestry.size() >= 2)
@@ -1121,16 +1105,8 @@ static AutocompleteEntryMap autocompleteStatement(
             }
         }
 
-        if (FFlag::LuauClipExtraHasEndProps)
-        {
-            if (AstStatRepeat* statRepeat = parent->as<AstStatRepeat>(); statRepeat && !statRepeat->body->hasEnd)
-                result.emplace("until", AutocompleteEntry{AutocompleteEntryKind::Keyword});
-        }
-        else
-        {
-            if (AstStatRepeat* statRepeat = parent->as<AstStatRepeat>(); statRepeat && !statRepeat->DEPRECATED_hasUntil)
-                result.emplace("until", AutocompleteEntry{AutocompleteEntryKind::Keyword});
-        }
+        if (AstStatRepeat* statRepeat = parent->as<AstStatRepeat>(); statRepeat && !statRepeat->body->hasEnd)
+            result.emplace("until", AutocompleteEntry{AutocompleteEntryKind::Keyword});
     }
 
     if (ancestry.size() >= 4)
@@ -1144,16 +1120,8 @@ static AutocompleteEntryMap autocompleteStatement(
         }
     }
 
-    if (FFlag::LuauClipExtraHasEndProps)
-    {
-        if (AstStatRepeat* statRepeat = extractStat<AstStatRepeat>(ancestry); statRepeat && !statRepeat->body->hasEnd)
-            result.emplace("until", AutocompleteEntry{AutocompleteEntryKind::Keyword});
-    }
-    else
-    {
-        if (AstStatRepeat* statRepeat = extractStat<AstStatRepeat>(ancestry); statRepeat && !statRepeat->DEPRECATED_hasUntil)
-            result.emplace("until", AutocompleteEntry{AutocompleteEntryKind::Keyword});
-    }
+    if (AstStatRepeat* statRepeat = extractStat<AstStatRepeat>(ancestry); statRepeat && !statRepeat->body->hasEnd)
+        result.emplace("until", AutocompleteEntry{AutocompleteEntryKind::Keyword});
 
     return result;
 }
@@ -1773,6 +1741,37 @@ static AutocompleteResult autocomplete(const SourceModule& sourceModule, const M
                 break;
             }
         }
+    }
+    else if (AstExprTable* exprTable = node->as<AstExprTable>(); exprTable && FFlag::LuauAutocompleteTableKeysNoInitialCharacter)
+    {
+        AutocompleteEntryMap result;
+
+        if (auto it = module->astExpectedTypes.find(exprTable))
+        {
+            result = autocompleteProps(*module, typeArena, builtinTypes, *it, PropIndexType::Key, ancestry);
+
+            // If the key type is a union of singleton strings,
+            // suggest those too.
+            if (auto ttv = get<TableType>(follow(*it)); ttv && ttv->indexer)
+            {
+                autocompleteStringSingleton(ttv->indexer->indexType, false, node, position, result);
+            }
+
+            // Remove keys that are already completed
+            for (const auto& item : exprTable->items)
+            {
+                if (!item.key)
+                    continue;
+
+                if (auto stringKey = item.key->as<AstExprConstantString>())
+                    result.erase(std::string(stringKey->value.data, stringKey->value.size));
+            }
+        }
+
+        // Also offer general expression suggestions
+        autocompleteExpression(sourceModule, *module, builtinTypes, typeArena, ancestry, position, result);
+
+        return {result, ancestry, AutocompleteContext::Property};
     }
     else if (isIdentifier(node) && (parent->is<AstStatExpr>() || parent->is<AstStatError>()))
         return {autocompleteStatement(sourceModule, *module, ancestry, position), ancestry, AutocompleteContext::Statement};

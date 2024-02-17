@@ -3,14 +3,18 @@
 #pragma once
 
 #include "Luau/Constraint.h"
+#include "Luau/DenseHash.h"
 #include "Luau/Error.h"
+#include "Luau/Location.h"
 #include "Luau/Module.h"
 #include "Luau/Normalize.h"
 #include "Luau/ToString.h"
 #include "Luau/Type.h"
 #include "Luau/TypeCheckLimits.h"
+#include "Luau/TypeFwd.h"
 #include "Luau/Variant.h"
 
+#include <utility>
 #include <vector>
 
 namespace Luau
@@ -71,9 +75,13 @@ struct ConstraintSolver
     // anything.
     std::unordered_map<NotNull<const Constraint>, size_t> blockedConstraints;
     // A mapping of type/pack pointers to the constraints they block.
-    std::unordered_map<BlockedConstraintId, std::vector<NotNull<const Constraint>>, HashBlockedConstraintId> blocked;
+    std::unordered_map<BlockedConstraintId, DenseHashSet<const Constraint*>, HashBlockedConstraintId> blocked;
     // Memoized instantiations of type aliases.
     DenseHashMap<InstantiationSignature, TypeId, HashInstantiationSignature> instantiatedAliases{{}};
+    // Breadcrumbs for where a free type's upper bound was expanded. We use
+    // these to provide more helpful error messages when a free type is solved
+    // as never unexpectedly.
+    DenseHashMap<TypeId, std::vector<std::pair<Location, TypeId>>> upperBoundContributors{nullptr};
 
     // A mapping from free types to the number of unresolved constraints that mention them.
     DenseHashMap<TypeId, size_t> unresolvedConstraints{{}};
@@ -118,13 +126,13 @@ struct ConstraintSolver
     bool tryDispatch(const NameConstraint& c, NotNull<const Constraint> constraint);
     bool tryDispatch(const TypeAliasExpansionConstraint& c, NotNull<const Constraint> constraint);
     bool tryDispatch(const FunctionCallConstraint& c, NotNull<const Constraint> constraint);
+    bool tryDispatch(const FunctionCheckConstraint& c, NotNull<const Constraint> constraint);
     bool tryDispatch(const PrimitiveTypeConstraint& c, NotNull<const Constraint> constraint);
     bool tryDispatch(const HasPropConstraint& c, NotNull<const Constraint> constraint);
     bool tryDispatch(const SetPropConstraint& c, NotNull<const Constraint> constraint, bool force);
     bool tryDispatch(const SetIndexerConstraint& c, NotNull<const Constraint> constraint, bool force);
     bool tryDispatch(const SingletonOrTopTypeConstraint& c, NotNull<const Constraint> constraint);
     bool tryDispatch(const UnpackConstraint& c, NotNull<const Constraint> constraint);
-    bool tryDispatch(const RefineConstraint& c, NotNull<const Constraint> constraint, bool force);
     bool tryDispatch(const SetOpConstraint& c, NotNull<const Constraint> constraint, bool force);
     bool tryDispatch(const ReduceConstraint& c, NotNull<const Constraint> constraint, bool force);
     bool tryDispatch(const ReducePackConstraint& c, NotNull<const Constraint> constraint, bool force);
@@ -140,7 +148,7 @@ struct ConstraintSolver
     std::pair<std::vector<TypeId>, std::optional<TypeId>> lookupTableProp(
         TypeId subjectType, const std::string& propName, bool suppressSimplification = false);
     std::pair<std::vector<TypeId>, std::optional<TypeId>> lookupTableProp(
-        TypeId subjectType, const std::string& propName, bool suppressSimplification, std::unordered_set<TypeId>& seen);
+        TypeId subjectType, const std::string& propName, bool suppressSimplification, DenseHashSet<TypeId>& seen);
 
     void block(NotNull<const Constraint> target, NotNull<const Constraint> constraint);
     /**
@@ -246,7 +254,6 @@ struct ConstraintSolver
     bool hasUnresolvedConstraints(TypeId ty);
 
 private:
-
     /** Helper used by tryDispatch(SubtypeConstraint) and
      * tryDispatch(PackSubtypeConstraint)
      *
@@ -257,7 +264,7 @@ private:
      *
      * If unification succeeds, unblock every type changed by the unification.
      */
-    template <typename TID>
+    template<typename TID>
     bool tryUnify(NotNull<const Constraint> constraint, TID subTy, TID superTy);
 
     /**
@@ -278,7 +285,7 @@ private:
      * @param target the type or type pack pointer that the constraint is blocked on.
      * @param constraint the constraint to block.
      **/
-    void block_(BlockedConstraintId target, NotNull<const Constraint> constraint);
+    bool block_(BlockedConstraintId target, NotNull<const Constraint> constraint);
 
     /**
      * Informs the solver that progress has been made on a type or type pack. The

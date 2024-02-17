@@ -67,4 +67,45 @@ function infloop9()
 	boom()
 end
 
+function infloop10()
+	for l0=4096,0,0 do
+		repeat
+			continue
+		until function<t0>() end
+	end
+end
+
+local haystack = string.rep("x", 100)
+local pattern = string.rep("x?", 100) .. string.rep("x", 100)
+
+function strhang1()
+	string.find(haystack, pattern)
+end
+
+function strhang2()
+	string.match(haystack, pattern)
+end
+
+function strhang3()
+	string.gsub(haystack, pattern, "%0")
+end
+
+function strhang4()
+	for k, v in string.gmatch(haystack, pattern) do
+	end
+end
+
+function strhang5()
+	local x = string.rep('x', 1000)
+	string.match(x, string.rep('x.*', 100) .. 'y')
+end
+
+function strhangpcall()
+	for i = 1,100 do
+		local status, msg = pcall(string.find, haystack, pattern)
+		assert(status == false)
+		assert(msg == "timeout")
+	end
+end
+
 return "OK"

@@ -19,10 +19,12 @@ static void visitVmRegDefsUses(T& visitor, IrFunction& function, const IrInst& i
     case IrCmd::LOAD_POINTER:
     case IrCmd::LOAD_DOUBLE:
     case IrCmd::LOAD_INT:
+    case IrCmd::LOAD_FLOAT:
     case IrCmd::LOAD_TVALUE:
         visitor.maybeUse(inst.a); // Argument can also be a VmConst
         break;
     case IrCmd::STORE_TAG:
+    case IrCmd::STORE_EXTRA:
     case IrCmd::STORE_POINTER:
     case IrCmd::STORE_DOUBLE:
     case IrCmd::STORE_INT:
@@ -41,6 +43,11 @@ static void visitVmRegDefsUses(T& visitor, IrFunction& function, const IrInst& i
         break;
         // A <- B, C
     case IrCmd::DO_ARITH:
+        visitor.maybeUse(inst.b); // Argument can also be a VmConst
+        visitor.maybeUse(inst.c); // Argument can also be a VmConst
+
+        visitor.def(inst.a);
+        break;
     case IrCmd::GET_TABLE:
         visitor.use(inst.b);
         visitor.maybeUse(inst.c); // Argument can also be a VmConst
@@ -110,7 +117,7 @@ static void visitVmRegDefsUses(T& visitor, IrFunction& function, const IrInst& i
         {
             if (count >= 3)
             {
-                LUAU_ASSERT(inst.d.kind == IrOpKind::VmReg && vmRegOp(inst.d) == vmRegOp(inst.c) + 1);
+                CODEGEN_ASSERT(inst.d.kind == IrOpKind::VmReg && vmRegOp(inst.d) == vmRegOp(inst.c) + 1);
 
                 visitor.useRange(vmRegOp(inst.c), count);
             }
@@ -199,12 +206,12 @@ static void visitVmRegDefsUses(T& visitor, IrFunction& function, const IrInst& i
 
     default:
         // All instructions which reference registers have to be handled explicitly
-        LUAU_ASSERT(inst.a.kind != IrOpKind::VmReg);
-        LUAU_ASSERT(inst.b.kind != IrOpKind::VmReg);
-        LUAU_ASSERT(inst.c.kind != IrOpKind::VmReg);
-        LUAU_ASSERT(inst.d.kind != IrOpKind::VmReg);
-        LUAU_ASSERT(inst.e.kind != IrOpKind::VmReg);
-        LUAU_ASSERT(inst.f.kind != IrOpKind::VmReg);
+        CODEGEN_ASSERT(inst.a.kind != IrOpKind::VmReg);
+        CODEGEN_ASSERT(inst.b.kind != IrOpKind::VmReg);
+        CODEGEN_ASSERT(inst.c.kind != IrOpKind::VmReg);
+        CODEGEN_ASSERT(inst.d.kind != IrOpKind::VmReg);
+        CODEGEN_ASSERT(inst.e.kind != IrOpKind::VmReg);
+        CODEGEN_ASSERT(inst.f.kind != IrOpKind::VmReg);
         break;
     }
 }

@@ -139,6 +139,10 @@ public:
     void fsqrt(RegisterA64 dst, RegisterA64 src);
     void fsub(RegisterA64 dst, RegisterA64 src1, RegisterA64 src2);
 
+    void ins_4s(RegisterA64 dst, RegisterA64 src, uint8_t index);
+    void ins_4s(RegisterA64 dst, uint8_t dstIndex, RegisterA64 src, uint8_t srcIndex);
+    void dup_4s(RegisterA64 dst, RegisterA64 src, uint8_t index);
+
     // Floating-point rounding and conversions
     void frinta(RegisterA64 dst, RegisterA64 src);
     void frintm(RegisterA64 dst, RegisterA64 src);
@@ -172,13 +176,15 @@ public:
     // Extracts code offset (in bytes) from label
     uint32_t getLabelOffset(const Label& label)
     {
-        LUAU_ASSERT(label.location != ~0u);
+        CODEGEN_ASSERT(label.location != ~0u);
         return label.location * 4;
     }
 
     void logAppend(const char* fmt, ...) LUAU_PRINTF_ATTR(2, 3);
 
     uint32_t getCodeSize() const;
+
+    unsigned getInstructionCount() const;
 
     // Resulting data and code that need to be copied over one after the other
     // The *end* of 'data' has to be aligned to 16 bytes, this will also align 'code'
@@ -223,6 +229,7 @@ private:
     void placeBM(const char* name, RegisterA64 dst, RegisterA64 src1, uint32_t src2, uint8_t op);
     void placeBFM(const char* name, RegisterA64 dst, RegisterA64 src1, int src2, uint8_t op, int immr, int imms);
     void placeER(const char* name, RegisterA64 dst, RegisterA64 src1, RegisterA64 src2, uint8_t op, int shift);
+    void placeVR(const char* name, RegisterA64 dst, RegisterA64 src1, RegisterA64 src2, uint16_t op, uint8_t op2);
 
     void place(uint32_t word);
 

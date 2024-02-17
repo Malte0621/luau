@@ -3,6 +3,7 @@
 
 #include "Luau/Location.h"
 
+#include <iterator>
 #include <optional>
 #include <functional>
 #include <string>
@@ -91,9 +92,20 @@ struct AstArray
     {
         return data;
     }
+
     const T* end() const
     {
         return data + size;
+    }
+
+    std::reverse_iterator<const T*> rbegin() const
+    {
+        return std::make_reverse_iterator(end());
+    }
+
+    std::reverse_iterator<const T*> rend() const
+    {
+        return std::make_reverse_iterator(begin());
     }
 };
 
@@ -249,6 +261,7 @@ public:
 enum class ConstantNumberParseResult
 {
     Ok,
+    Imprecise,
     Malformed,
     BinOverflow,
     HexOverflow,
@@ -374,7 +387,7 @@ public:
     AstExprFunction(const Location& location, const AstArray<AstGenericType>& generics, const AstArray<AstGenericTypePack>& genericPacks,
         AstLocal* self, const AstArray<AstLocal*>& args, bool vararg, const Location& varargLocation, AstStatBlock* body, size_t functionDepth,
         const AstName& debugname, const std::optional<AstTypeList>& returnAnnotation = {}, AstTypePack* varargAnnotation = nullptr,
-        bool DEPRECATED_hasEnd = false, const std::optional<Location>& argLocation = std::nullopt);
+        const std::optional<Location>& argLocation = std::nullopt);
 
     void visit(AstVisitor* visitor) override;
 
@@ -393,8 +406,6 @@ public:
 
     AstName debugname;
 
-    // TODO clip with FFlag::LuauClipExtraHasEndProps
-    bool DEPRECATED_hasEnd = false;
     std::optional<Location> argLocation;
 };
 
@@ -560,7 +571,7 @@ public:
     LUAU_RTTI(AstStatIf)
 
     AstStatIf(const Location& location, AstExpr* condition, AstStatBlock* thenbody, AstStat* elsebody, const std::optional<Location>& thenLocation,
-        const std::optional<Location>& elseLocation, bool DEPRECATED_hasEnd);
+        const std::optional<Location>& elseLocation);
 
     void visit(AstVisitor* visitor) override;
 
@@ -572,9 +583,6 @@ public:
 
     // Active for 'elseif' as well
     std::optional<Location> elseLocation;
-
-    // TODO clip with FFlag::LuauClipExtraHasEndProps
-    bool DEPRECATED_hasEnd = false;
 };
 
 class AstStatWhile : public AstStat
@@ -582,7 +590,7 @@ class AstStatWhile : public AstStat
 public:
     LUAU_RTTI(AstStatWhile)
 
-    AstStatWhile(const Location& location, AstExpr* condition, AstStatBlock* body, bool hasDo, const Location& doLocation, bool DEPRECATED_hasEnd);
+    AstStatWhile(const Location& location, AstExpr* condition, AstStatBlock* body, bool hasDo, const Location& doLocation);
 
     void visit(AstVisitor* visitor) override;
 
@@ -591,9 +599,6 @@ public:
 
     bool hasDo = false;
     Location doLocation;
-
-    // TODO clip with FFlag::LuauClipExtraHasEndProps
-    bool DEPRECATED_hasEnd = false;
 };
 
 class AstStatRepeat : public AstStat
@@ -677,7 +682,7 @@ public:
     LUAU_RTTI(AstStatFor)
 
     AstStatFor(const Location& location, AstLocal* var, AstExpr* from, AstExpr* to, AstExpr* step, AstStatBlock* body, bool hasDo,
-        const Location& doLocation, bool DEPRECATED_hasEnd);
+        const Location& doLocation);
 
     void visit(AstVisitor* visitor) override;
 
@@ -689,9 +694,6 @@ public:
 
     bool hasDo = false;
     Location doLocation;
-
-    // TODO clip with FFlag::LuauClipExtraHasEndProps
-    bool DEPRECATED_hasEnd = false;
 };
 
 class AstStatForIn : public AstStat
@@ -700,7 +702,7 @@ public:
     LUAU_RTTI(AstStatForIn)
 
     AstStatForIn(const Location& location, const AstArray<AstLocal*>& vars, const AstArray<AstExpr*>& values, AstStatBlock* body, bool hasIn,
-        const Location& inLocation, bool hasDo, const Location& doLocation, bool DEPRECATED_hasEnd);
+        const Location& inLocation, bool hasDo, const Location& doLocation);
 
     void visit(AstVisitor* visitor) override;
 
@@ -713,9 +715,6 @@ public:
 
     bool hasDo = false;
     Location doLocation;
-
-    // TODO clip with FFlag::LuauClipExtraHasEndProps
-    bool DEPRECATED_hasEnd = false;
 };
 
 class AstStatAssign : public AstStat
@@ -834,11 +833,21 @@ struct AstDeclaredClassProp
     bool isMethod = false;
 };
 
+enum class AstTableAccess
+{
+    Read = 0b01,
+    Write = 0b10,
+    ReadWrite = 0b11,
+};
+
 struct AstTableIndexer
 {
     AstType* indexType;
     AstType* resultType;
     Location location;
+
+    AstTableAccess access = AstTableAccess::ReadWrite;
+    std::optional<Location> accessLocation;
 };
 
 class AstStatDeclareClass : public AstStat
@@ -902,6 +911,8 @@ struct AstTableProp
     AstName name;
     Location location;
     AstType* type;
+    AstTableAccess access = AstTableAccess::ReadWrite;
+    std::optional<Location> accessLocation;
 };
 
 class AstTypeTable : public AstType

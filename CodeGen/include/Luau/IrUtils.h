@@ -128,6 +128,7 @@ inline bool isNonTerminatingJump(IrCmd cmd)
     case IrCmd::CHECK_SLOT_MATCH:
     case IrCmd::CHECK_NODE_NO_NEXT:
     case IrCmd::CHECK_NODE_VALUE:
+    case IrCmd::CHECK_BUFFER_LEN:
         return true;
     default:
         break;
@@ -144,6 +145,7 @@ inline bool hasResult(IrCmd cmd)
     case IrCmd::LOAD_POINTER:
     case IrCmd::LOAD_DOUBLE:
     case IrCmd::LOAD_INT:
+    case IrCmd::LOAD_FLOAT:
     case IrCmd::LOAD_TVALUE:
     case IrCmd::LOAD_ENV:
     case IrCmd::GET_ARR_ADDR:
@@ -166,6 +168,11 @@ inline bool hasResult(IrCmd cmd)
     case IrCmd::ROUND_NUM:
     case IrCmd::SQRT_NUM:
     case IrCmd::ABS_NUM:
+    case IrCmd::ADD_VEC:
+    case IrCmd::SUB_VEC:
+    case IrCmd::MUL_VEC:
+    case IrCmd::DIV_VEC:
+    case IrCmd::UNM_VEC:
     case IrCmd::NOT_ANY:
     case IrCmd::CMP_ANY:
     case IrCmd::TABLE_LEN:
@@ -179,6 +186,7 @@ inline bool hasResult(IrCmd cmd)
     case IrCmd::UINT_TO_NUM:
     case IrCmd::NUM_TO_INT:
     case IrCmd::NUM_TO_UINT:
+    case IrCmd::NUM_TO_VECTOR:
     case IrCmd::SUBSTITUTE:
     case IrCmd::INVOKE_FASTCALL:
     case IrCmd::BITAND_UINT:
@@ -197,6 +205,13 @@ inline bool hasResult(IrCmd cmd)
     case IrCmd::GET_TYPEOF:
     case IrCmd::NEWCLOSURE:
     case IrCmd::FINDUPVAL:
+    case IrCmd::BUFFER_READI8:
+    case IrCmd::BUFFER_READU8:
+    case IrCmd::BUFFER_READI16:
+    case IrCmd::BUFFER_READU16:
+    case IrCmd::BUFFER_READI32:
+    case IrCmd::BUFFER_READF32:
+    case IrCmd::BUFFER_READF64:
         return true;
     default:
         break;

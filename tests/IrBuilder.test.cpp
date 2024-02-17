@@ -13,6 +13,8 @@
 
 using namespace Luau::CodeGen;
 
+LUAU_DYNAMIC_FASTFLAG(LuauCodeGenCheckGcEffectFix)
+
 class IrBuilderFixture
 {
 public:
@@ -135,7 +137,7 @@ TEST_CASE_FIXTURE(IrBuilderFixture, "FinalX64OptCheckTag")
     optimizeMemoryOperandsX64(build.function);
 
     // Load from memory is 'inlined' into CHECK_TAG
-    CHECK("\n" + toString(build.function, /* includeUseInfo */ false) == R"(
+    CHECK("\n" + toString(build.function, IncludeUseInfo::No) == R"(
 bb_0:
    CHECK_TAG R2, tnil, bb_fallback_1
    CHECK_TAG K5, tnil, bb_fallback_1
@@ -161,7 +163,7 @@ TEST_CASE_FIXTURE(IrBuilderFixture, "FinalX64OptBinaryArith")
     optimizeMemoryOperandsX64(build.function);
 
     // Load from memory is 'inlined' into second argument
-    CHECK("\n" + toString(build.function, /* includeUseInfo */ false) == R"(
+    CHECK("\n" + toString(build.function, IncludeUseInfo::No) == R"(
 bb_0:
    %0 = LOAD_DOUBLE R1
    %2 = ADD_NUM %0, R2
@@ -191,7 +193,7 @@ TEST_CASE_FIXTURE(IrBuilderFixture, "FinalX64OptEqTag1")
     optimizeMemoryOperandsX64(build.function);
 
     // Load from memory is 'inlined' into first argument
-    CHECK("\n" + toString(build.function, /* includeUseInfo */ false) == R"(
+    CHECK("\n" + toString(build.function, IncludeUseInfo::No) == R"(
 bb_0:
    %1 = LOAD_TAG R2
    JUMP_EQ_TAG R1, %1, bb_1, bb_2
@@ -228,7 +230,7 @@ TEST_CASE_FIXTURE(IrBuilderFixture, "FinalX64OptEqTag2")
 
     // Load from memory is 'inlined' into second argument is it can't be done for the first one
     // We also swap first and second argument to generate memory access on the LHS
-    CHECK("\n" + toString(build.function, /* includeUseInfo */ false) == R"(
+    CHECK("\n" + toString(build.function, IncludeUseInfo::No) == R"(
 bb_0:
    %0 = LOAD_TAG R1
    STORE_TAG R6, %0
@@ -265,7 +267,7 @@ TEST_CASE_FIXTURE(IrBuilderFixture, "FinalX64OptEqTag3")
     optimizeMemoryOperandsX64(build.function);
 
     // Load from memory is 'inlined' into first argument
-    CHECK("\n" + toString(build.function, /* includeUseInfo */ false) == R"(
+    CHECK("\n" + toString(build.function, IncludeUseInfo::No) == R"(
 bb_0:
    %0 = LOAD_POINTER R1
    %1 = GET_ARR_ADDR %0, 0i
@@ -302,7 +304,7 @@ TEST_CASE_FIXTURE(IrBuilderFixture, "FinalX64OptJumpCmpNum")
     optimizeMemoryOperandsX64(build.function);
 
     // Load from memory is 'inlined' into first argument
-    CHECK("\n" + toString(build.function, /* includeUseInfo */ false) == R"(
+    CHECK("\n" + toString(build.function, IncludeUseInfo::No) == R"(
 bb_0:
    %1 = LOAD_DOUBLE R2
    JUMP_CMP_NUM R1, %1, bb_1, bb_2
@@ -357,7 +359,7 @@ TEST_CASE_FIXTURE(IrBuilderFixture, "Numeric")
     updateUseCounts(build.function);
     constantFold();
 
-    CHECK("\n" + toString(build.function, /* includeUseInfo */ false) == R"(
+    CHECK("\n" + toString(build.function, IncludeUseInfo::No) == R"(
 bb_0:
    STORE_INT R0, 30i
    STORE_INT R1, -2147483648i
@@ -401,7 +403,7 @@ TEST_CASE_FIXTURE(IrBuilderFixture, "NumericConversions")
     updateUseCounts(build.function);
     constantFold();
 
-    CHECK("\n" + toString(build.function, /* includeUseInfo */ false) == R"(
+    CHECK("\n" + toString(build.function, IncludeUseInfo::No) == R"(
 bb_0:
    STORE_DOUBLE R0, 8
    STORE_DOUBLE R1, 3740139520
@@ -429,7 +431,7 @@ TEST_CASE_FIXTURE(IrBuilderFixture, "NumericConversionsBlocked")
     updateUseCounts(build.function);
     constantFold();
 
-    CHECK("\n" + toString(build.function, /* includeUseInfo */ false) == R"(
+    CHECK("\n" + toString(build.function, IncludeUseInfo::No) == R"(
 bb_0:
    %1 = NUM_TO_INT 1e+20
    STORE_INT R0, %1
@@ -487,7 +489,7 @@ TEST_CASE_FIXTURE(IrBuilderFixture, "Bit32")
     updateUseCounts(build.function);
     constantFold();
 
-    CHECK("\n" + toString(build.function, /* includeUseInfo */ false) == R"(
+    CHECK("\n" + toString(build.function, IncludeUseInfo::No) == R"(
 bb_0:
    %0 = LOAD_INT R0
    STORE_INT R0, 14i
@@ -545,7 +547,7 @@ TEST_CASE_FIXTURE(IrBuilderFixture, "Bit32RangeReduction")
     updateUseCounts(build.function);
     constantFold();
 
-    CHECK("\n" + toString(build.function, /* includeUseInfo */ false) == R"(
+    CHECK("\n" + toString(build.function, IncludeUseInfo::No) == R"(
 bb_0:
    STORE_INT R10, 62914560i
    STORE_INT R10, 61440i
@@ -572,7 +574,7 @@ TEST_CASE_FIXTURE(IrBuilderFixture, "ReplacementPreservesUses")
     updateUseCounts(build.function);
     constantFold();
 
-    CHECK("\n" + toString(build.function, /* includeUseInfo */ true) == R"(
+    CHECK("\n" + toString(build.function, IncludeUseInfo::Yes) == R"(
 bb_0:                                                       ; useCount: 0
    %0 = LOAD_INT R0                                          ; useCount: 1, lastUse: %0
    %1 = BITNOT_UINT %0                                       ; useCount: 1, lastUse: %0
@@ -599,7 +601,7 @@ TEST_CASE_FIXTURE(IrBuilderFixture, "NumericNan")
     updateUseCounts(build.function);
     constantFold();
 
-    CHECK("\n" + toString(build.function, /* includeUseInfo */ false) == R"(
+    CHECK("\n" + toString(build.function, IncludeUseInfo::No) == R"(
 bb_0:
    STORE_DOUBLE R0, 2
    STORE_DOUBLE R0, nan
@@ -631,7 +633,7 @@ TEST_CASE_FIXTURE(IrBuilderFixture, "ControlFlowEq")
     updateUseCounts(build.function);
     constantFold();
 
-    CHECK("\n" + toString(build.function, /* includeUseInfo */ false) == R"(
+    CHECK("\n" + toString(build.function, IncludeUseInfo::No) == R"(
 bb_0:
    JUMP bb_1
 
@@ -680,7 +682,7 @@ TEST_CASE_FIXTURE(IrBuilderFixture, "NumToIndex")
     updateUseCounts(build.function);
     constantFold();
 
-    CHECK("\n" + toString(build.function, /* includeUseInfo */ false) == R"(
+    CHECK("\n" + toString(build.function, IncludeUseInfo::No) == R"(
 bb_0:
    STORE_INT R0, 4i
    RETURN 0u
@@ -715,7 +717,7 @@ TEST_CASE_FIXTURE(IrBuilderFixture, "Guards")
     updateUseCounts(build.function);
     constantFold();
 
-    CHECK("\n" + toString(build.function, /* includeUseInfo */ false) == R"(
+    CHECK("\n" + toString(build.function, IncludeUseInfo::No) == R"(
 bb_0:
    RETURN 0u
 
@@ -836,7 +838,7 @@ TEST_CASE_FIXTURE(IrBuilderFixture, "RememberTagsAndValues")
     updateUseCounts(build.function);
     constPropInBlockChains(build, true);
 
-    CHECK("\n" + toString(build.function, /* includeUseInfo */ false) == R"(
+    CHECK("\n" + toString(build.function, IncludeUseInfo::No) == R"(
 bb_0:
    STORE_TAG R0, tnumber
    STORE_INT R1, 10i
@@ -880,7 +882,7 @@ TEST_CASE_FIXTURE(IrBuilderFixture, "PropagateThroughTvalue")
     updateUseCounts(build.function);
     constPropInBlockChains(build, true);
 
-    CHECK("\n" + toString(build.function, /* includeUseInfo */ false) == R"(
+    CHECK("\n" + toString(build.function, IncludeUseInfo::No) == R"(
 bb_0:
    STORE_TAG R0, tnumber
    STORE_DOUBLE R0, 0.5
@@ -909,7 +911,7 @@ TEST_CASE_FIXTURE(IrBuilderFixture, "SkipCheckTag")
     updateUseCounts(build.function);
     constPropInBlockChains(build, true);
 
-    CHECK("\n" + toString(build.function, /* includeUseInfo */ false) == R"(
+    CHECK("\n" + toString(build.function, IncludeUseInfo::No) == R"(
 bb_0:
    STORE_TAG R0, tnumber
    RETURN 0u
@@ -936,7 +938,7 @@ TEST_CASE_FIXTURE(IrBuilderFixture, "SkipOncePerBlockChecks")
     updateUseCounts(build.function);
     constPropInBlockChains(build, true);
 
-    CHECK("\n" + toString(build.function, /* includeUseInfo */ false) == R"(
+    CHECK("\n" + toString(build.function, IncludeUseInfo::No) == R"(
 bb_0:
    CHECK_SAFE_ENV
    CHECK_GC
@@ -975,7 +977,7 @@ TEST_CASE_FIXTURE(IrBuilderFixture, "RememberTableState")
     updateUseCounts(build.function);
     constPropInBlockChains(build, true);
 
-    CHECK("\n" + toString(build.function, /* includeUseInfo */ false) == R"(
+    CHECK("\n" + toString(build.function, IncludeUseInfo::No) == R"(
 bb_0:
    %0 = LOAD_POINTER R0
    CHECK_NO_METATABLE %0, bb_fallback_1
@@ -1021,7 +1023,7 @@ TEST_CASE_FIXTURE(IrBuilderFixture, "RememberNewTableState")
     updateUseCounts(build.function);
     constPropInBlockChains(build, true);
 
-    CHECK("\n" + toString(build.function, /* includeUseInfo */ false) == R"(
+    CHECK("\n" + toString(build.function, IncludeUseInfo::No) == R"(
 bb_0:
    %0 = NEW_TABLE 16u, 32u
    STORE_POINTER R0, %0
@@ -1053,7 +1055,7 @@ TEST_CASE_FIXTURE(IrBuilderFixture, "SkipUselessBarriers")
     updateUseCounts(build.function);
     constPropInBlockChains(build, true);
 
-    CHECK("\n" + toString(build.function, /* includeUseInfo */ false) == R"(
+    CHECK("\n" + toString(build.function, IncludeUseInfo::No) == R"(
 bb_0:
    STORE_TAG R0, tnumber
    RETURN 0u
@@ -1084,7 +1086,7 @@ TEST_CASE_FIXTURE(IrBuilderFixture, "ConcatInvalidation")
     updateUseCounts(build.function);
     constPropInBlockChains(build, true);
 
-    CHECK("\n" + toString(build.function, /* includeUseInfo */ false) == R"(
+    CHECK("\n" + toString(build.function, IncludeUseInfo::No) == R"(
 bb_0:
    STORE_TAG R0, tnumber
    STORE_INT R1, 10i
@@ -1133,7 +1135,7 @@ TEST_CASE_FIXTURE(IrBuilderFixture, "BuiltinFastcallsMayInvalidateMemory")
     updateUseCounts(build.function);
     constPropInBlockChains(build, true);
 
-    CHECK("\n" + toString(build.function, /* includeUseInfo */ false) == R"(
+    CHECK("\n" + toString(build.function, IncludeUseInfo::No) == R"(
 bb_0:
    STORE_DOUBLE R0, 0.5
    %1 = LOAD_POINTER R0
@@ -1166,7 +1168,7 @@ TEST_CASE_FIXTURE(IrBuilderFixture, "RedundantStoreCheckConstantType")
     updateUseCounts(build.function);
     constPropInBlockChains(build, true);
 
-    CHECK("\n" + toString(build.function, /* includeUseInfo */ false) == R"(
+    CHECK("\n" + toString(build.function, IncludeUseInfo::No) == R"(
 bb_0:
    STORE_INT R0, 10i
    STORE_DOUBLE R0, 0.5
@@ -1196,7 +1198,7 @@ TEST_CASE_FIXTURE(IrBuilderFixture, "TagCheckPropagation")
     updateUseCounts(build.function);
     constPropInBlockChains(build, true);
 
-    CHECK("\n" + toString(build.function, /* includeUseInfo */ false) == R"(
+    CHECK("\n" + toString(build.function, IncludeUseInfo::No) == R"(
 bb_0:
    %0 = LOAD_TAG R0
    CHECK_TAG %0, tnumber, bb_fallback_1
@@ -1228,7 +1230,7 @@ TEST_CASE_FIXTURE(IrBuilderFixture, "TagCheckPropagationConflicting")
     updateUseCounts(build.function);
     constPropInBlockChains(build, true);
 
-    CHECK("\n" + toString(build.function, /* includeUseInfo */ false) == R"(
+    CHECK("\n" + toString(build.function, IncludeUseInfo::No) == R"(
 bb_0:
    %0 = LOAD_TAG R0
    CHECK_TAG %0, tnumber, bb_fallback_1
@@ -1264,7 +1266,7 @@ TEST_CASE_FIXTURE(IrBuilderFixture, "TruthyTestRemoval")
     updateUseCounts(build.function);
     constPropInBlockChains(build, true);
 
-    CHECK("\n" + toString(build.function, /* includeUseInfo */ false) == R"(
+    CHECK("\n" + toString(build.function, IncludeUseInfo::No) == R"(
 bb_0:
    %0 = LOAD_TAG R1
    CHECK_TAG %0, tnumber, bb_fallback_3
@@ -1303,7 +1305,7 @@ TEST_CASE_FIXTURE(IrBuilderFixture, "FalsyTestRemoval")
     updateUseCounts(build.function);
     constPropInBlockChains(build, true);
 
-    CHECK("\n" + toString(build.function, /* includeUseInfo */ false) == R"(
+    CHECK("\n" + toString(build.function, IncludeUseInfo::No) == R"(
 bb_0:
    %0 = LOAD_TAG R1
    CHECK_TAG %0, tnumber, bb_fallback_3
@@ -1338,7 +1340,7 @@ TEST_CASE_FIXTURE(IrBuilderFixture, "TagEqRemoval")
     updateUseCounts(build.function);
     constPropInBlockChains(build, true);
 
-    CHECK("\n" + toString(build.function, /* includeUseInfo */ false) == R"(
+    CHECK("\n" + toString(build.function, IncludeUseInfo::No) == R"(
 bb_0:
    %0 = LOAD_TAG R1
    CHECK_TAG %0, tboolean
@@ -1370,7 +1372,7 @@ TEST_CASE_FIXTURE(IrBuilderFixture, "IntEqRemoval")
     updateUseCounts(build.function);
     constPropInBlockChains(build, true);
 
-    CHECK("\n" + toString(build.function, /* includeUseInfo */ false) == R"(
+    CHECK("\n" + toString(build.function, IncludeUseInfo::No) == R"(
 bb_0:
    STORE_INT R1, 5i
    JUMP bb_1
@@ -1401,7 +1403,7 @@ TEST_CASE_FIXTURE(IrBuilderFixture, "NumCmpRemoval")
     updateUseCounts(build.function);
     constPropInBlockChains(build, true);
 
-    CHECK("\n" + toString(build.function, /* includeUseInfo */ false) == R"(
+    CHECK("\n" + toString(build.function, IncludeUseInfo::No) == R"(
 bb_0:
    STORE_DOUBLE R1, 4
    JUMP bb_2
@@ -1429,7 +1431,7 @@ TEST_CASE_FIXTURE(IrBuilderFixture, "DataFlowsThroughDirectJumpToUniqueSuccessor
     updateUseCounts(build.function);
     constPropInBlockChains(build, true);
 
-    CHECK("\n" + toString(build.function, /* includeUseInfo */ false) == R"(
+    CHECK("\n" + toString(build.function, IncludeUseInfo::No) == R"(
 bb_0:
    STORE_TAG R0, tnumber
    JUMP bb_1
@@ -1462,7 +1464,7 @@ TEST_CASE_FIXTURE(IrBuilderFixture, "DataDoesNotFlowThroughDirectJumpToNonUnique
     updateUseCounts(build.function);
     constPropInBlockChains(build, true);
 
-    CHECK("\n" + toString(build.function, /* includeUseInfo */ false) == R"(
+    CHECK("\n" + toString(build.function, IncludeUseInfo::No) == R"(
 bb_0:
    STORE_TAG R0, tnumber
    JUMP bb_1
@@ -1498,7 +1500,7 @@ TEST_CASE_FIXTURE(IrBuilderFixture, "EntryBlockUseRemoval")
     updateUseCounts(build.function);
     constPropInBlockChains(build, true);
 
-    CHECK("\n" + toString(build.function, /* includeUseInfo */ false) == R"(
+    CHECK("\n" + toString(build.function, IncludeUseInfo::No) == R"(
 bb_0:
    STORE_TAG R0, tnumber
    JUMP bb_1
@@ -1533,7 +1535,7 @@ TEST_CASE_FIXTURE(IrBuilderFixture, "RecursiveSccUseRemoval1")
     updateUseCounts(build.function);
     constPropInBlockChains(build, true);
 
-    CHECK("\n" + toString(build.function, /* includeUseInfo */ false) == R"(
+    CHECK("\n" + toString(build.function, IncludeUseInfo::No) == R"(
 bb_0:
    RETURN R0, 0i
 
@@ -1575,7 +1577,7 @@ TEST_CASE_FIXTURE(IrBuilderFixture, "RecursiveSccUseRemoval2")
     updateUseCounts(build.function);
     constPropInBlockChains(build, true);
 
-    CHECK("\n" + toString(build.function, /* includeUseInfo */ false) == R"(
+    CHECK("\n" + toString(build.function, IncludeUseInfo::No) == R"(
 bb_0:
    JUMP bb_1
 
@@ -1611,7 +1613,7 @@ TEST_CASE_FIXTURE(IrBuilderFixture, "IntNumIntPeepholes")
     updateUseCounts(build.function);
     constPropInBlockChains(build, true);
 
-    CHECK("\n" + toString(build.function, /* includeUseInfo */ false) == R"(
+    CHECK("\n" + toString(build.function, IncludeUseInfo::No) == R"(
 bb_0:
    %0 = LOAD_INT R0
    %1 = LOAD_INT R1
@@ -1647,7 +1649,7 @@ TEST_CASE_FIXTURE(IrBuilderFixture, "InvalidateReglinkVersion")
     updateUseCounts(build.function);
     constPropInBlockChains(build, true);
 
-    CHECK("\n" + toString(build.function, /* includeUseInfo */ false) == R"(
+    CHECK("\n" + toString(build.function, IncludeUseInfo::No) == R"(
 bb_0:
    STORE_TAG R2, tstring
    %1 = LOAD_TVALUE R2
@@ -1708,7 +1710,7 @@ TEST_CASE_FIXTURE(IrBuilderFixture, "SimplePathExtraction")
     constPropInBlockChains(build, true);
     createLinearBlocks(build, true);
 
-    CHECK("\n" + toString(build.function, /* includeUseInfo */ false) == R"(
+    CHECK("\n" + toString(build.function, IncludeUseInfo::No) == R"(
 bb_0:
    %0 = LOAD_TAG R2
    CHECK_TAG %0, tnumber, bb_fallback_1
@@ -1784,7 +1786,7 @@ TEST_CASE_FIXTURE(IrBuilderFixture, "NoPathExtractionForBlocksWithLiveOutValues"
     constPropInBlockChains(build, true);
     createLinearBlocks(build, true);
 
-    CHECK("\n" + toString(build.function, /* includeUseInfo */ false) == R"(
+    CHECK("\n" + toString(build.function, IncludeUseInfo::No) == R"(
 bb_0:
    %0 = LOAD_TAG R2
    CHECK_TAG %0, tnumber, bb_fallback_1
@@ -1836,7 +1838,7 @@ TEST_CASE_FIXTURE(IrBuilderFixture, "InfiniteLoopInPathAnalysis")
     constPropInBlockChains(build, true);
     createLinearBlocks(build, true);
 
-    CHECK("\n" + toString(build.function, /* includeUseInfo */ false) == R"(
+    CHECK("\n" + toString(build.function, IncludeUseInfo::No) == R"(
 bb_0:
    STORE_TAG R0, tnumber
    JUMP bb_1
@@ -1865,7 +1867,7 @@ TEST_CASE_FIXTURE(IrBuilderFixture, "PartialStoreInvalidation")
     updateUseCounts(build.function);
     constPropInBlockChains(build, true);
 
-    CHECK("\n" + toString(build.function, /* includeUseInfo */ false) == R"(
+    CHECK("\n" + toString(build.function, IncludeUseInfo::No) == R"(
 bb_0:
    %0 = LOAD_TVALUE R0
    STORE_TVALUE R1, %0
@@ -1893,7 +1895,7 @@ TEST_CASE_FIXTURE(IrBuilderFixture, "VaridicRegisterRangeInvalidation")
     updateUseCounts(build.function);
     constPropInBlockChains(build, true);
 
-    CHECK("\n" + toString(build.function, /* includeUseInfo */ false) == R"(
+    CHECK("\n" + toString(build.function, IncludeUseInfo::No) == R"(
 bb_0:
    STORE_TAG R2, tnumber
    FALLBACK_GETVARARGS 0u, R1, -1i
@@ -1919,7 +1921,7 @@ TEST_CASE_FIXTURE(IrBuilderFixture, "LoadPropagatesOnlyRightType")
     updateUseCounts(build.function);
     constPropInBlockChains(build, true);
 
-    CHECK("\n" + toString(build.function, /* includeUseInfo */ false) == R"(
+    CHECK("\n" + toString(build.function, IncludeUseInfo::No) == R"(
 bb_0:
    STORE_INT R0, 2i
    %1 = LOAD_DOUBLE R0
@@ -1933,8 +1935,6 @@ bb_0:
 
 TEST_CASE_FIXTURE(IrBuilderFixture, "DuplicateHashSlotChecks")
 {
-    ScopedFastFlag luauReuseHashSlots{"LuauReuseHashSlots2", true};
-
     IrOp block = build.block(IrBlockKind::Internal);
     IrOp fallback = build.block(IrBlockKind::Fallback);
 
@@ -1967,7 +1967,7 @@ TEST_CASE_FIXTURE(IrBuilderFixture, "DuplicateHashSlotChecks")
 
     // In the future, we might even see duplicate identical TValue loads go away
     // In the future, we might even see loads of different VM regs with the same value go away
-    CHECK("\n" + toString(build.function, /* includeUseInfo */ false) == R"(
+    CHECK("\n" + toString(build.function, IncludeUseInfo::No) == R"(
 bb_0:
    %0 = LOAD_POINTER R1
    %1 = GET_SLOT_NODE_ADDR %0, 3u, K1
@@ -1991,8 +1991,6 @@ bb_fallback_1:
 
 TEST_CASE_FIXTURE(IrBuilderFixture, "DuplicateHashSlotChecksAvoidNil")
 {
-    ScopedFastFlag luauReuseHashSlots{"LuauReuseHashSlots2", true};
-
     IrOp block = build.block(IrBlockKind::Internal);
     IrOp fallback = build.block(IrBlockKind::Fallback);
 
@@ -2033,7 +2031,7 @@ TEST_CASE_FIXTURE(IrBuilderFixture, "DuplicateHashSlotChecksAvoidNil")
     updateUseCounts(build.function);
     constPropInBlockChains(build, true);
 
-    CHECK("\n" + toString(build.function, /* includeUseInfo */ false) == R"(
+    CHECK("\n" + toString(build.function, IncludeUseInfo::No) == R"(
 bb_0:
    %0 = LOAD_POINTER R1
    %1 = GET_SLOT_NODE_ADDR %0, 3u, K1
@@ -2060,10 +2058,70 @@ bb_fallback_1:
 )");
 }
 
+TEST_CASE_FIXTURE(IrBuilderFixture, "DuplicateHashSlotChecksInvalidation")
+{
+    ScopedFastFlag luauCodeGenCheckGcEffectFix{DFFlag::LuauCodeGenCheckGcEffectFix, true};
+
+    IrOp block = build.block(IrBlockKind::Internal);
+    IrOp fallback = build.block(IrBlockKind::Fallback);
+
+    build.beginBlock(block);
+
+    // This roughly corresponds to 'return t.a + t.a' with a stange GC assist in the middle
+    IrOp table1 = build.inst(IrCmd::LOAD_POINTER, build.vmReg(1));
+    IrOp slot1 = build.inst(IrCmd::GET_SLOT_NODE_ADDR, table1, build.constUint(3), build.vmConst(1));
+    build.inst(IrCmd::CHECK_SLOT_MATCH, slot1, build.vmConst(1), fallback);
+    IrOp value1 = build.inst(IrCmd::LOAD_TVALUE, slot1, build.constInt(0));
+    build.inst(IrCmd::STORE_TVALUE, build.vmReg(3), value1);
+
+    build.inst(IrCmd::CHECK_GC);
+
+    IrOp slot1b = build.inst(IrCmd::GET_SLOT_NODE_ADDR, table1, build.constUint(8), build.vmConst(1));
+    build.inst(IrCmd::CHECK_SLOT_MATCH, slot1b, build.vmConst(1), fallback);
+    IrOp value1b = build.inst(IrCmd::LOAD_TVALUE, slot1b, build.constInt(0));
+    build.inst(IrCmd::STORE_TVALUE, build.vmReg(4), value1b);
+
+    IrOp a = build.inst(IrCmd::LOAD_DOUBLE, build.vmReg(3));
+    IrOp b = build.inst(IrCmd::LOAD_DOUBLE, build.vmReg(4));
+    IrOp sum = build.inst(IrCmd::ADD_NUM, a, b);
+    build.inst(IrCmd::STORE_DOUBLE, build.vmReg(2), sum);
+
+    build.inst(IrCmd::RETURN, build.vmReg(2), build.constUint(1));
+
+    build.beginBlock(fallback);
+    build.inst(IrCmd::RETURN, build.vmReg(0), build.constUint(1));
+
+    updateUseCounts(build.function);
+    constPropInBlockChains(build, true);
+
+    // In the future, we might even see duplicate identical TValue loads go away
+    // In the future, we might even see loads of different VM regs with the same value go away
+    CHECK("\n" + toString(build.function, IncludeUseInfo::No) == R"(
+bb_0:
+   %0 = LOAD_POINTER R1
+   %1 = GET_SLOT_NODE_ADDR %0, 3u, K1
+   CHECK_SLOT_MATCH %1, K1, bb_fallback_1
+   %3 = LOAD_TVALUE %1, 0i
+   STORE_TVALUE R3, %3
+   CHECK_GC
+   %6 = GET_SLOT_NODE_ADDR %0, 8u, K1
+   CHECK_SLOT_MATCH %6, K1, bb_fallback_1
+   %8 = LOAD_TVALUE %6, 0i
+   STORE_TVALUE R4, %8
+   %10 = LOAD_DOUBLE R3
+   %11 = LOAD_DOUBLE R4
+   %12 = ADD_NUM %10, %11
+   STORE_DOUBLE R2, %12
+   RETURN R2, 1u
+
+bb_fallback_1:
+   RETURN R0, 1u
+
+)");
+}
+
 TEST_CASE_FIXTURE(IrBuilderFixture, "DuplicateArrayElemChecksSameIndex")
 {
-    ScopedFastFlag luauReuseHashSlots{"LuauReuseArrSlots2", true};
-
     IrOp block = build.block(IrBlockKind::Internal);
     IrOp fallback = build.block(IrBlockKind::Fallback);
 
@@ -2096,7 +2154,7 @@ TEST_CASE_FIXTURE(IrBuilderFixture, "DuplicateArrayElemChecksSameIndex")
 
     // In the future, we might even see duplicate identical TValue loads go away
     // In the future, we might even see loads of different VM regs with the same value go away
-    CHECK("\n" + toString(build.function, /* includeUseInfo */ false) == R"(
+    CHECK("\n" + toString(build.function, IncludeUseInfo::No) == R"(
 bb_0:
    %0 = LOAD_POINTER R1
    CHECK_ARRAY_SIZE %0, 0i, bb_fallback_1
@@ -2119,8 +2177,6 @@ bb_fallback_1:
 
 TEST_CASE_FIXTURE(IrBuilderFixture, "DuplicateArrayElemChecksSameValue")
 {
-    ScopedFastFlag luauReuseHashSlots{"LuauReuseArrSlots2", true};
-
     IrOp block = build.block(IrBlockKind::Internal);
     IrOp fallback = build.block(IrBlockKind::Fallback);
 
@@ -2158,7 +2214,7 @@ TEST_CASE_FIXTURE(IrBuilderFixture, "DuplicateArrayElemChecksSameValue")
 
     // In the future, we might even see duplicate identical TValue loads go away
     // In the future, we might even see loads of different VM regs with the same value go away
-    CHECK("\n" + toString(build.function, /* includeUseInfo */ false) == R"(
+    CHECK("\n" + toString(build.function, IncludeUseInfo::No) == R"(
 bb_0:
    %0 = LOAD_POINTER R1
    %1 = LOAD_DOUBLE R2
@@ -2184,8 +2240,6 @@ bb_fallback_1:
 
 TEST_CASE_FIXTURE(IrBuilderFixture, "DuplicateArrayElemChecksLowerIndex")
 {
-    ScopedFastFlag luauReuseHashSlots{"LuauReuseArrSlots2", true};
-
     IrOp block = build.block(IrBlockKind::Internal);
     IrOp fallback = build.block(IrBlockKind::Fallback);
 
@@ -2216,7 +2270,7 @@ TEST_CASE_FIXTURE(IrBuilderFixture, "DuplicateArrayElemChecksLowerIndex")
     updateUseCounts(build.function);
     constPropInBlockChains(build, true);
 
-    CHECK("\n" + toString(build.function, /* includeUseInfo */ false) == R"(
+    CHECK("\n" + toString(build.function, IncludeUseInfo::No) == R"(
 bb_0:
    %0 = LOAD_POINTER R1
    CHECK_ARRAY_SIZE %0, 1i, bb_fallback_1
@@ -2240,8 +2294,6 @@ bb_fallback_1:
 
 TEST_CASE_FIXTURE(IrBuilderFixture, "DuplicateArrayElemChecksInvalidations")
 {
-    ScopedFastFlag luauReuseHashSlots{"LuauReuseArrSlots2", true};
-
     IrOp block = build.block(IrBlockKind::Internal);
     IrOp fallback = build.block(IrBlockKind::Fallback);
 
@@ -2274,7 +2326,7 @@ TEST_CASE_FIXTURE(IrBuilderFixture, "DuplicateArrayElemChecksInvalidations")
     updateUseCounts(build.function);
     constPropInBlockChains(build, true);
 
-    CHECK("\n" + toString(build.function, /* includeUseInfo */ false) == R"(
+    CHECK("\n" + toString(build.function, IncludeUseInfo::No) == R"(
 bb_0:
    %0 = LOAD_POINTER R1
    CHECK_ARRAY_SIZE %0, 0i, bb_fallback_1
@@ -2300,8 +2352,6 @@ bb_fallback_1:
 
 TEST_CASE_FIXTURE(IrBuilderFixture, "ArrayElemChecksNegativeIndex")
 {
-    ScopedFastFlag luauReuseHashSlots{"LuauReuseArrSlots2", true};
-
     IrOp block = build.block(IrBlockKind::Internal);
     IrOp fallback = build.block(IrBlockKind::Fallback);
 
@@ -2332,13 +2382,114 @@ TEST_CASE_FIXTURE(IrBuilderFixture, "ArrayElemChecksNegativeIndex")
     updateUseCounts(build.function);
     constPropInBlockChains(build, true);
 
-    CHECK("\n" + toString(build.function, /* includeUseInfo */ false) == R"(
+    CHECK("\n" + toString(build.function, IncludeUseInfo::No) == R"(
 bb_0:
    %0 = LOAD_POINTER R1
    CHECK_ARRAY_SIZE %0, 0i, bb_fallback_1
    %2 = GET_ARR_ADDR %0, 0i
    %3 = LOAD_TVALUE %2, 0i
    STORE_TVALUE R3, %3
+   JUMP bb_fallback_1
+
+bb_fallback_1:
+   RETURN R0, 1u
+
+)");
+}
+
+TEST_CASE_FIXTURE(IrBuilderFixture, "DuplicateBufferLengthChecks")
+{
+    IrOp block = build.block(IrBlockKind::Internal);
+    IrOp fallback = build.block(IrBlockKind::Fallback);
+
+    build.beginBlock(block);
+
+    IrOp sourceBuf = build.inst(IrCmd::LOAD_TVALUE, build.vmReg(0));
+
+    build.inst(IrCmd::STORE_TVALUE, build.vmReg(2), sourceBuf);
+    IrOp buffer1 = build.inst(IrCmd::LOAD_POINTER, build.vmReg(2));
+    build.inst(IrCmd::CHECK_BUFFER_LEN, buffer1, build.constInt(12), build.constInt(4), fallback);
+    build.inst(IrCmd::BUFFER_WRITEI32, buffer1, build.constInt(12), build.constInt(32));
+
+    // Now with lower index, should be removed
+    build.inst(IrCmd::STORE_TVALUE, build.vmReg(2), sourceBuf);
+    IrOp buffer2 = build.inst(IrCmd::LOAD_POINTER, build.vmReg(2));
+    build.inst(IrCmd::CHECK_BUFFER_LEN, buffer2, build.constInt(8), build.constInt(4), fallback);
+    build.inst(IrCmd::BUFFER_WRITEI32, buffer2, build.constInt(8), build.constInt(30));
+
+    // Now with higher index, should raise the initial check bound
+    build.inst(IrCmd::STORE_TVALUE, build.vmReg(2), sourceBuf);
+    IrOp buffer3 = build.inst(IrCmd::LOAD_POINTER, build.vmReg(2));
+    build.inst(IrCmd::CHECK_BUFFER_LEN, buffer3, build.constInt(16), build.constInt(4), fallback);
+    build.inst(IrCmd::BUFFER_WRITEI32, buffer3, build.constInt(16), build.constInt(60));
+
+    // Now with different access size, should not reuse previous checks (can be improved in the future)
+    build.inst(IrCmd::CHECK_BUFFER_LEN, buffer3, build.constInt(16), build.constInt(2), fallback);
+    build.inst(IrCmd::BUFFER_WRITEI16, buffer3, build.constInt(16), build.constInt(55));
+
+    // Now with same, but unknown index value
+    IrOp index = build.inst(IrCmd::LOAD_INT, build.vmReg(1));
+    build.inst(IrCmd::CHECK_BUFFER_LEN, buffer3, index, build.constInt(2), fallback);
+    build.inst(IrCmd::BUFFER_WRITEI16, buffer3, index, build.constInt(1));
+    build.inst(IrCmd::CHECK_BUFFER_LEN, buffer3, index, build.constInt(2), fallback);
+    build.inst(IrCmd::BUFFER_WRITEI16, buffer3, index, build.constInt(2));
+
+    build.inst(IrCmd::RETURN, build.vmReg(1), build.constUint(1));
+
+    build.beginBlock(fallback);
+    build.inst(IrCmd::RETURN, build.vmReg(0), build.constUint(1));
+
+    updateUseCounts(build.function);
+    constPropInBlockChains(build, true);
+
+    CHECK("\n" + toString(build.function, IncludeUseInfo::No) == R"(
+bb_0:
+   %0 = LOAD_TVALUE R0
+   STORE_TVALUE R2, %0
+   %2 = LOAD_POINTER R2
+   CHECK_BUFFER_LEN %2, 16i, 4i, bb_fallback_1
+   BUFFER_WRITEI32 %2, 12i, 32i
+   BUFFER_WRITEI32 %2, 8i, 30i
+   BUFFER_WRITEI32 %2, 16i, 60i
+   CHECK_BUFFER_LEN %2, 16i, 2i, bb_fallback_1
+   BUFFER_WRITEI16 %2, 16i, 55i
+   %15 = LOAD_INT R1
+   CHECK_BUFFER_LEN %2, %15, 2i, bb_fallback_1
+   BUFFER_WRITEI16 %2, %15, 1i
+   BUFFER_WRITEI16 %2, %15, 2i
+   RETURN R1, 1u
+
+bb_fallback_1:
+   RETURN R0, 1u
+
+)");
+}
+
+TEST_CASE_FIXTURE(IrBuilderFixture, "BufferLenghtChecksNegativeIndex")
+{
+    IrOp block = build.block(IrBlockKind::Internal);
+    IrOp fallback = build.block(IrBlockKind::Fallback);
+
+    build.beginBlock(block);
+
+    IrOp sourceBuf = build.inst(IrCmd::LOAD_TVALUE, build.vmReg(0));
+
+    build.inst(IrCmd::STORE_TVALUE, build.vmReg(2), sourceBuf);
+    IrOp buffer1 = build.inst(IrCmd::LOAD_POINTER, build.vmReg(2));
+    build.inst(IrCmd::CHECK_BUFFER_LEN, buffer1, build.constInt(-4), build.constInt(4), fallback);
+    build.inst(IrCmd::BUFFER_WRITEI32, buffer1, build.constInt(-4), build.constInt(32));
+    build.inst(IrCmd::RETURN, build.vmReg(1), build.constUint(1));
+
+    build.beginBlock(fallback);
+    build.inst(IrCmd::RETURN, build.vmReg(0), build.constUint(1));
+
+    updateUseCounts(build.function);
+    constPropInBlockChains(build, true);
+
+    CHECK("\n" + toString(build.function, IncludeUseInfo::No) == R"(
+bb_0:
+   %0 = LOAD_TVALUE R0
+   STORE_TVALUE R2, %0
    JUMP bb_fallback_1
 
 bb_fallback_1:
@@ -2375,7 +2526,7 @@ TEST_CASE_FIXTURE(IrBuilderFixture, "SimpleDiamond")
     updateUseCounts(build.function);
     computeCfgInfo(build.function);
 
-    CHECK("\n" + toString(build.function, /* includeUseInfo */ false) == R"(
+    CHECK("\n" + toString(build.function, IncludeUseInfo::No) == R"(
 bb_0:
 ; successors: bb_1, bb_2
 ; in regs: R0, R1, R2, R3
@@ -2425,7 +2576,7 @@ TEST_CASE_FIXTURE(IrBuilderFixture, "ImplicitFixedRegistersInVarargCall")
     updateUseCounts(build.function);
     computeCfgInfo(build.function);
 
-    CHECK("\n" + toString(build.function, /* includeUseInfo */ false) == R"(
+    CHECK("\n" + toString(build.function, IncludeUseInfo::No) == R"(
 bb_0:
 ; successors: bb_1
 ; in regs: R0, R1, R2
@@ -2460,7 +2611,7 @@ TEST_CASE_FIXTURE(IrBuilderFixture, "ExplicitUseOfRegisterInVarargSequence")
     updateUseCounts(build.function);
     computeCfgInfo(build.function);
 
-    CHECK("\n" + toString(build.function, /* includeUseInfo */ false) == R"(
+    CHECK("\n" + toString(build.function, IncludeUseInfo::No) == R"(
 bb_0:
 ; successors: bb_1
 ; out regs: R0...
@@ -2493,7 +2644,7 @@ TEST_CASE_FIXTURE(IrBuilderFixture, "VariadicSequenceRestart")
     updateUseCounts(build.function);
     computeCfgInfo(build.function);
 
-    CHECK("\n" + toString(build.function, /* includeUseInfo */ false) == R"(
+    CHECK("\n" + toString(build.function, IncludeUseInfo::No) == R"(
 bb_0:
 ; successors: bb_1
 ; in regs: R0, R1
@@ -2532,7 +2683,7 @@ TEST_CASE_FIXTURE(IrBuilderFixture, "FallbackDoesNotFlowUp")
     updateUseCounts(build.function);
     computeCfgInfo(build.function);
 
-    CHECK("\n" + toString(build.function, /* includeUseInfo */ false) == R"(
+    CHECK("\n" + toString(build.function, IncludeUseInfo::No) == R"(
 bb_0:
 ; successors: bb_fallback_1, bb_2
 ; in regs: R0
@@ -2584,7 +2735,7 @@ TEST_CASE_FIXTURE(IrBuilderFixture, "VariadicSequencePeeling")
     updateUseCounts(build.function);
     computeCfgInfo(build.function);
 
-    CHECK("\n" + toString(build.function, /* includeUseInfo */ false) == R"(
+    CHECK("\n" + toString(build.function, IncludeUseInfo::No) == R"(
 bb_0:
 ; successors: bb_1, bb_2
 ; in regs: R0, R1
@@ -2637,7 +2788,7 @@ TEST_CASE_FIXTURE(IrBuilderFixture, "BuiltinVariadicStart")
     updateUseCounts(build.function);
     computeCfgInfo(build.function);
 
-    CHECK("\n" + toString(build.function, /* includeUseInfo */ false) == R"(
+    CHECK("\n" + toString(build.function, IncludeUseInfo::No) == R"(
 bb_0:
 ; successors: bb_1
 ; in regs: R0
@@ -2667,7 +2818,7 @@ TEST_CASE_FIXTURE(IrBuilderFixture, "SetTable")
     updateUseCounts(build.function);
     computeCfgInfo(build.function);
 
-    CHECK("\n" + toString(build.function, /* includeUseInfo */ false) == R"(
+    CHECK("\n" + toString(build.function, IncludeUseInfo::No) == R"(
 bb_0:
 ; in regs: R0, R1
    SET_TABLE R0, R1, 1u
@@ -2746,7 +2897,7 @@ TEST_CASE_FIXTURE(IrBuilderFixture, "RemoveDuplicateCalculation")
     updateUseCounts(build.function);
     constPropInBlockChains(build, true);
 
-    CHECK("\n" + toString(build.function, /* includeUseInfo */ false) == R"(
+    CHECK("\n" + toString(build.function, IncludeUseInfo::No) == R"(
 bb_0:
    %0 = LOAD_DOUBLE R0
    %1 = UNM_NUM %0
@@ -2782,7 +2933,7 @@ TEST_CASE_FIXTURE(IrBuilderFixture, "LateTableStateLink")
     updateUseCounts(build.function);
     constPropInBlockChains(build, true);
 
-    CHECK("\n" + toString(build.function, /* includeUseInfo */ false) == R"(
+    CHECK("\n" + toString(build.function, IncludeUseInfo::No) == R"(
 bb_0:
    %0 = DUP_TABLE R0
    STORE_POINTER R0, %0
@@ -2813,7 +2964,7 @@ TEST_CASE_FIXTURE(IrBuilderFixture, "RegisterVersioning")
     updateUseCounts(build.function);
     constPropInBlockChains(build, true);
 
-    CHECK("\n" + toString(build.function, /* includeUseInfo */ false) == R"(
+    CHECK("\n" + toString(build.function, IncludeUseInfo::No) == R"(
 bb_0:
    %0 = LOAD_DOUBLE R0
    %1 = UNM_NUM %0
@@ -2842,7 +2993,7 @@ TEST_CASE_FIXTURE(IrBuilderFixture, "SetListIsABlocker")
     updateUseCounts(build.function);
     constPropInBlockChains(build, true);
 
-    CHECK("\n" + toString(build.function, /* includeUseInfo */ false) == R"(
+    CHECK("\n" + toString(build.function, IncludeUseInfo::No) == R"(
 bb_0:
    %0 = LOAD_DOUBLE R0
    SETLIST
@@ -2871,7 +3022,7 @@ TEST_CASE_FIXTURE(IrBuilderFixture, "CallIsABlocker")
     updateUseCounts(build.function);
     constPropInBlockChains(build, true);
 
-    CHECK("\n" + toString(build.function, /* includeUseInfo */ false) == R"(
+    CHECK("\n" + toString(build.function, IncludeUseInfo::No) == R"(
 bb_0:
    %0 = LOAD_DOUBLE R0
    CALL R1, 1i, R2, 1i
@@ -2900,7 +3051,7 @@ TEST_CASE_FIXTURE(IrBuilderFixture, "NoPropagationOfCapturedRegs")
     computeCfgInfo(build.function);
     constPropInBlockChains(build, true);
 
-    CHECK("\n" + toString(build.function, /* includeUseInfo */ false) == R"(
+    CHECK("\n" + toString(build.function, IncludeUseInfo::No) == R"(
 ; captured regs: R0
 
 bb_0:
@@ -2932,7 +3083,7 @@ TEST_CASE_FIXTURE(IrBuilderFixture, "NoDeadLoadReuse")
     updateUseCounts(build.function);
     constPropInBlockChains(build, true);
 
-    CHECK("\n" + toString(build.function, /* includeUseInfo */ false) == R"(
+    CHECK("\n" + toString(build.function, IncludeUseInfo::No) == R"(
 bb_0:
    %4 = LOAD_DOUBLE R0
    %5 = ADD_NUM 0, %4
@@ -2959,7 +3110,7 @@ TEST_CASE_FIXTURE(IrBuilderFixture, "NoDeadValueReuse")
     updateUseCounts(build.function);
     constPropInBlockChains(build, true);
 
-    CHECK("\n" + toString(build.function, /* includeUseInfo */ false) == R"(
+    CHECK("\n" + toString(build.function, IncludeUseInfo::No) == R"(
 bb_0:
    %0 = LOAD_DOUBLE R0
    %3 = NUM_TO_INT %0
@@ -3001,7 +3152,7 @@ TEST_CASE_FIXTURE(IrBuilderFixture, "TValueLoadToSplitStore")
     updateUseCounts(build.function);
     constPropInBlockChains(build, true);
 
-    CHECK("\n" + toString(build.function, /* includeUseInfo */ false) == R"(
+    CHECK("\n" + toString(build.function, IncludeUseInfo::No) == R"(
 bb_0:
    %0 = LOAD_DOUBLE R0
    %1 = ADD_NUM %0, 4
@@ -3034,7 +3185,7 @@ TEST_CASE_FIXTURE(IrBuilderFixture, "TagStoreUpdatesValueVersion")
     updateUseCounts(build.function);
     constPropInBlockChains(build, true);
 
-    CHECK("\n" + toString(build.function, /* includeUseInfo */ false) == R"(
+    CHECK("\n" + toString(build.function, IncludeUseInfo::No) == R"(
 bb_0:
    %0 = LOAD_POINTER R0
    STORE_POINTER R1, %0
@@ -3062,7 +3213,7 @@ TEST_CASE_FIXTURE(IrBuilderFixture, "TagStoreUpdatesSetUpval")
     updateUseCounts(build.function);
     constPropInBlockChains(build, true);
 
-    CHECK("\n" + toString(build.function, /* includeUseInfo */ false) == R"(
+    CHECK("\n" + toString(build.function, IncludeUseInfo::No) == R"(
 bb_0:
    STORE_TAG R0, tnumber
    STORE_DOUBLE R0, 0.5
@@ -3074,8 +3225,6 @@ bb_0:
 
 TEST_CASE_FIXTURE(IrBuilderFixture, "TagSelfEqualityCheckRemoval")
 {
-    ScopedFastFlag luauMergeTagLoads{"LuauMergeTagLoads", true};
-
     IrOp entry = build.block(IrBlockKind::Internal);
     IrOp trueBlock = build.block(IrBlockKind::Internal);
     IrOp falseBlock = build.block(IrBlockKind::Internal);
@@ -3095,7 +3244,7 @@ TEST_CASE_FIXTURE(IrBuilderFixture, "TagSelfEqualityCheckRemoval")
     updateUseCounts(build.function);
     constPropInBlockChains(build, true);
 
-    CHECK("\n" + toString(build.function, /* includeUseInfo */ false) == R"(
+    CHECK("\n" + toString(build.function, IncludeUseInfo::No) == R"(
 bb_0:
    JUMP bb_1
 
@@ -3103,6 +3252,40 @@ bb_1:
    RETURN 1u
 
 )");
+}
+
+TEST_SUITE_END();
+
+TEST_SUITE_BEGIN("Dump");
+
+TEST_CASE_FIXTURE(IrBuilderFixture, "ToDot")
+{
+    IrOp entry = build.block(IrBlockKind::Internal);
+    IrOp a = build.block(IrBlockKind::Internal);
+    IrOp b = build.block(IrBlockKind::Internal);
+    IrOp exit = build.block(IrBlockKind::Internal);
+
+    build.beginBlock(entry);
+    build.inst(IrCmd::JUMP_EQ_TAG, build.inst(IrCmd::LOAD_TAG, build.vmReg(0)), build.constTag(tnumber), a, b);
+
+    build.beginBlock(a);
+    build.inst(IrCmd::STORE_TVALUE, build.vmReg(2), build.inst(IrCmd::LOAD_TVALUE, build.vmReg(1)));
+    build.inst(IrCmd::JUMP, exit);
+
+    build.beginBlock(b);
+    build.inst(IrCmd::STORE_TVALUE, build.vmReg(3), build.inst(IrCmd::LOAD_TVALUE, build.vmReg(1)));
+    build.inst(IrCmd::JUMP, exit);
+
+    build.beginBlock(exit);
+    build.inst(IrCmd::RETURN, build.vmReg(2), build.constInt(2));
+
+    updateUseCounts(build.function);
+    computeCfgInfo(build.function);
+
+    // note: we don't validate the output of these to avoid test churn when formatting changes; we run these to make sure they don't assert/crash
+    toDot(build.function, /* includeInst= */ true);
+    toDotCfg(build.function);
+    toDotDjGraph(build.function);
 }
 
 TEST_SUITE_END();

@@ -3,7 +3,6 @@
 #include "Fixture.h"
 
 #include "doctest.h"
-#include "Luau/BuiltinDefinitions.h"
 
 using namespace Luau;
 
@@ -141,9 +140,9 @@ TEST_CASE_FIXTURE(Fixture, "overloaded_function_call_with_singletons")
 TEST_CASE_FIXTURE(Fixture, "overloaded_function_call_with_singletons_mismatch")
 {
     CheckResult result = check(R"(
-        function f(a, b) end
-        local g : ((true, string) -> ()) & ((false, number) -> ()) = (f::any)
-        g(true, 37)
+        function f(g: ((true, string) -> ()) & ((false, number) -> ()))
+            g(true, 37)
+        end
     )");
 
     LUAU_REQUIRE_ERROR_COUNT(2, result);
@@ -350,11 +349,10 @@ Table type 'a' not compatible with type 'Bad' because the former is missing fiel
     CHECK_EQ(expected, toString(result.errors[0]));
 }
 
-#if 0
 TEST_CASE_FIXTURE(Fixture, "parametric_tagged_union_alias")
 {
     ScopedFastFlag sff[] = {
-        {"DebugLuauDeferredConstraintResolution", true},
+        {FFlag::DebugLuauDeferredConstraintResolution, true},
     };
     CheckResult result = check(R"(
         type Ok<T> = {success: true, result: T}
@@ -367,12 +365,11 @@ TEST_CASE_FIXTURE(Fixture, "parametric_tagged_union_alias")
 
     LUAU_REQUIRE_ERROR_COUNT(1, result);
 
-    const std::string expectedError =
-        "Type 'a' could not be converted into 'Err<number> | Ok<string>'; type a (a) is not a subtype of Err<number> | Ok<string>[1] (Err<number>)";
+    // FIXME: This could be improved by expanding the contents of `a`
+    const std::string expectedError = "Type 'a' could not be converted into 'Err<number> | Ok<string>'";
 
     CHECK(toString(result.errors[0]) == expectedError);
 }
-#endif
 
 TEST_CASE_FIXTURE(Fixture, "if_then_else_expression_singleton_options")
 {
@@ -430,7 +427,11 @@ TEST_CASE_FIXTURE(Fixture, "widening_happens_almost_everywhere")
     )");
 
     LUAU_REQUIRE_NO_ERRORS(result);
-    CHECK_EQ("string", toString(requireType("copy")));
+
+    if (FFlag::DebugLuauDeferredConstraintResolution)
+        CHECK_EQ(R"("foo")", toString(requireType("copy")));
+    else
+        CHECK_EQ("string", toString(requireType("copy")));
 }
 
 TEST_CASE_FIXTURE(Fixture, "widening_happens_almost_everywhere_except_for_tables")

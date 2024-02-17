@@ -15,6 +15,8 @@
 
 LUAU_FASTFLAG(LuauTraceTypesInNonstrictMode2)
 LUAU_FASTFLAG(LuauSetMetatableDoesNotTimeTravel)
+LUAU_FASTFLAG(LuauAutocompleteStringLiteralBounds);
+LUAU_FASTFLAG(LuauAutocompleteTableKeysNoInitialCharacter)
 
 using namespace Luau;
 
@@ -105,6 +107,15 @@ struct ACFixtureImpl : BaseType
         LoadDefinitionFileResult result = this->frontend.loadDefinitionFile(
             globals, globals.globalScope, source, "@test", /* captureComments */ false, /* typeCheckForAutocomplete */ true);
         freeze(globals.globalTypes);
+
+        if (FFlag::DebugLuauDeferredConstraintResolution)
+        {
+            GlobalTypes& globals = this->frontend.globals;
+            unfreeze(globals.globalTypes);
+            LoadDefinitionFileResult result = this->frontend.loadDefinitionFile(
+                globals, globals.globalScope, source, "@test", /* captureComments */ false, /* typeCheckForAutocomplete */ true);
+            freeze(globals.globalTypes);
+        }
 
         REQUIRE_MESSAGE(result.success, "loadDefinition: unable to load definition file");
         return result;
@@ -978,8 +989,6 @@ TEST_CASE_FIXTURE(ACFixture, "autocomplete_end_with_lambda")
 
 TEST_CASE_FIXTURE(ACFixture, "autocomplete_end_of_do_block")
 {
-    ScopedFastFlag sff{"LuauAutocompleteDoEnd", true};
-
     check("do @1");
 
     auto ac = autocomplete('1');
@@ -2685,6 +2694,54 @@ local t = {
     CHECK_EQ(ac.context, AutocompleteContext::Property);
 }
 
+TEST_CASE_FIXTURE(ACFixture, "suggest_table_keys_no_initial_character")
+{
+    ScopedFastFlag sff{FFlag::LuauAutocompleteTableKeysNoInitialCharacter, true};
+
+    check(R"(
+type Test = { first: number, second: number }
+local t: Test = { @1 }
+    )");
+
+    auto ac = autocomplete('1');
+    CHECK(ac.entryMap.count("first"));
+    CHECK(ac.entryMap.count("second"));
+    CHECK_EQ(ac.context, AutocompleteContext::Property);
+}
+
+TEST_CASE_FIXTURE(ACFixture, "suggest_table_keys_no_initial_character_2")
+{
+    ScopedFastFlag sff{FFlag::LuauAutocompleteTableKeysNoInitialCharacter, true};
+
+    check(R"(
+type Test = { first: number, second: number }
+local t: Test = { first = 1, @1 }
+    )");
+
+    auto ac = autocomplete('1');
+    CHECK_EQ(ac.entryMap.count("first"), 0);
+    CHECK(ac.entryMap.count("second"));
+    CHECK_EQ(ac.context, AutocompleteContext::Property);
+}
+
+TEST_CASE_FIXTURE(ACFixture, "suggest_table_keys_no_initial_character_3")
+{
+    ScopedFastFlag sff{FFlag::LuauAutocompleteTableKeysNoInitialCharacter, true};
+
+    check(R"(
+type Properties = { TextScaled: boolean, Text: string }
+local function create(props: Properties) end
+
+create({ @1 })
+    )");
+
+    auto ac = autocomplete('1');
+    CHECK(ac.entryMap.size() > 0);
+    CHECK(ac.entryMap.count("TextScaled"));
+    CHECK(ac.entryMap.count("Text"));
+    CHECK_EQ(ac.context, AutocompleteContext::Property);
+}
+
 TEST_CASE_FIXTURE(ACFixture, "autocomplete_documentation_symbols")
 {
     loadDefinition(R"(
@@ -3105,7 +3162,10 @@ TEST_CASE_FIXTURE(ACFixture, "string_singleton_as_table_key")
 // https://github.com/Roblox/luau/issues/858
 TEST_CASE_FIXTURE(ACFixture, "string_singleton_in_if_statement")
 {
-    ScopedFastFlag sff{"LuauAutocompleteStringLiteralBounds", true};
+    ScopedFastFlag sff[]{
+        {FFlag::LuauAutocompleteStringLiteralBounds, true},
+        {FFlag::DebugLuauDeferredConstraintResolution, true},
+    };
 
     check(R"(
         --!strict
@@ -3129,7 +3189,7 @@ TEST_CASE_FIXTURE(ACFixture, "string_singleton_in_if_statement")
     ac = autocomplete('2');
 
     CHECK(ac.entryMap.count("left"));
-    CHECK(ac.entryMap.count("right"));
+    CHECK(!ac.entryMap.count("right"));
 
     ac = autocomplete('3');
 
@@ -3159,7 +3219,7 @@ TEST_CASE_FIXTURE(ACFixture, "string_singleton_in_if_statement")
     ac = autocomplete('8');
 
     CHECK(ac.entryMap.count("left"));
-    CHECK(ac.entryMap.count("right"));
+    CHECK(!ac.entryMap.count("right"));
 
     ac = autocomplete('9');
 
@@ -3263,8 +3323,9 @@ end
 
     {
         check(R"(
-local t: Foo
-t:@1
+local function f(t: Foo)
+    t:@1
+end
         )");
 
         auto ac = autocomplete('1');
@@ -3279,8 +3340,9 @@ t:@1
 
     {
         check(R"(
-local t: Foo
-t.@1
+local function f(t: Foo)
+    t.@1
+end
         )");
 
         auto ac = autocomplete('1');

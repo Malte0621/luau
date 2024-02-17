@@ -221,20 +221,18 @@ n2 [label="number"];
 n1 -> n3 [label="y"];
 n3 [label="FunctionType 3"];
 n3 -> n4 [label="arg"];
-n4 [label="TypePack 4"];
-n4 -> n5 [label="tail"];
-n5 [label="VariadicTypePack 5"];
-n5 -> n6;
-n6 [label="string"];
-n3 -> n7 [label="ret"];
-n7 [label="TypePack 7"];
-n1 -> n8 [label="[index]"];
-n8 [label="string"];
-n1 -> n9 [label="[value]"];
-n9 [label="any"];
-n1 -> n10 [label="typeParam"];
-n10 [label="number"];
-n1 -> n5 [label="typePackParam"];
+n4 [label="VariadicTypePack 4"];
+n4 -> n5;
+n5 [label="string"];
+n3 -> n6 [label="ret"];
+n6 [label="TypePack 6"];
+n1 -> n7 [label="[index]"];
+n7 [label="string"];
+n1 -> n8 [label="[value]"];
+n8 [label="any"];
+n1 -> n9 [label="typeParam"];
+n9 [label="number"];
+n1 -> n4 [label="typePackParam"];
 })",
             toDot(requireType("a"), opts));
     }
@@ -289,7 +287,7 @@ n3 [label="TableType 3"];
 TEST_CASE_FIXTURE(Fixture, "free")
 {
     ScopedFastFlag sff[] = {
-        {"DebugLuauDeferredConstraintResolution", false},
+        {FFlag::DebugLuauDeferredConstraintResolution, false},
     };
 
     Type type{TypeVariant{FreeType{TypeLevel{0, 0}}}};
@@ -305,7 +303,7 @@ n1 [label="FreeType 1"];
 TEST_CASE_FIXTURE(Fixture, "free_with_constraints")
 {
     ScopedFastFlag sff[] = {
-        {"DebugLuauDeferredConstraintResolution", true},
+        {FFlag::DebugLuauDeferredConstraintResolution, true},
     };
 
     Type type{TypeVariant{FreeType{nullptr, builtinTypes->numberType, builtinTypes->optionalNumberType}}};

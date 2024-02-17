@@ -3,8 +3,6 @@
 
 #include "Luau/IrUtils.h"
 
-LUAU_FASTFLAGVARIABLE(LuauReduceStackSpills, false)
-
 namespace Luau
 {
 namespace CodeGen
@@ -29,6 +27,10 @@ void IrValueLocationTracking::beforeInstLowering(IrInst& inst)
     case IrCmd::STORE_TAG:
         // Tag update is a bit tricky, restore operations of values are not affected
         invalidateRestoreOp(inst.a, /*skipValueInvalidation*/ true);
+        break;
+    case IrCmd::STORE_EXTRA:
+        // While extra field update doesn't invalidate some of the values, it can invalidate a vector type field
+        invalidateRestoreOp(inst.a, /*skipValueInvalidation*/ false);
         break;
     case IrCmd::STORE_POINTER:
     case IrCmd::STORE_DOUBLE:
@@ -92,6 +94,7 @@ void IrValueLocationTracking::beforeInstLowering(IrInst& inst)
     case IrCmd::LOAD_POINTER:
     case IrCmd::LOAD_DOUBLE:
     case IrCmd::LOAD_INT:
+    case IrCmd::LOAD_FLOAT:
     case IrCmd::LOAD_TVALUE:
     case IrCmd::CMP_ANY:
     case IrCmd::JUMP_IF_TRUTHY:
@@ -128,16 +131,21 @@ void IrValueLocationTracking::beforeInstLowering(IrInst& inst)
     case IrCmd::MAX_NUM:
     case IrCmd::JUMP_EQ_TAG:
     case IrCmd::JUMP_CMP_NUM:
+    case IrCmd::FLOOR_NUM:
+    case IrCmd::CEIL_NUM:
+    case IrCmd::ROUND_NUM:
+    case IrCmd::SQRT_NUM:
+    case IrCmd::ABS_NUM:
         break;
 
     default:
         // All instructions which reference registers have to be handled explicitly
-        LUAU_ASSERT(inst.a.kind != IrOpKind::VmReg);
-        LUAU_ASSERT(inst.b.kind != IrOpKind::VmReg);
-        LUAU_ASSERT(inst.c.kind != IrOpKind::VmReg);
-        LUAU_ASSERT(inst.d.kind != IrOpKind::VmReg);
-        LUAU_ASSERT(inst.e.kind != IrOpKind::VmReg);
-        LUAU_ASSERT(inst.f.kind != IrOpKind::VmReg);
+        CODEGEN_ASSERT(inst.a.kind != IrOpKind::VmReg);
+        CODEGEN_ASSERT(inst.b.kind != IrOpKind::VmReg);
+        CODEGEN_ASSERT(inst.c.kind != IrOpKind::VmReg);
+        CODEGEN_ASSERT(inst.d.kind != IrOpKind::VmReg);
+        CODEGEN_ASSERT(inst.e.kind != IrOpKind::VmReg);
+        CODEGEN_ASSERT(inst.f.kind != IrOpKind::VmReg);
         break;
     }
 }
@@ -198,7 +206,7 @@ void IrValueLocationTracking::invalidateRestoreOp(IrOp location, bool skipValueI
             IrInst& inst = function.instructions[instIdx];
 
             // If we are only modifying the tag, we can avoid invalidating tracked location of values
-            if (FFlag::LuauReduceStackSpills && skipValueInvalidation)
+            if (skipValueInvalidation)
             {
                 switch (getCmdValueKind(inst.cmd))
                 {
@@ -224,7 +232,7 @@ void IrValueLocationTracking::invalidateRestoreOp(IrOp location, bool skipValueI
     }
     else if (location.kind == IrOpKind::VmConst)
     {
-        LUAU_ASSERT(!"VM constants are immutable");
+        CODEGEN_ASSERT(!"VM constants are immutable");
     }
 }
 

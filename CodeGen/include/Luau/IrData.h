@@ -1,6 +1,7 @@
 // This file is part of the Luau programming language and is licensed under MIT License; see LICENSE.txt for details
 #pragma once
 
+#include "Luau/Bytecode.h"
 #include "Luau/IrAnalysis.h"
 #include "Luau/Label.h"
 #include "Luau/RegisterX64.h"
@@ -51,6 +52,11 @@ enum class IrCmd : uint8_t
     // A: Rn
     LOAD_INT,
 
+    // Load a float field from vector as a double number
+    // A: Rn or Kn
+    // B: int (offset from the start of TValue)
+    LOAD_FLOAT,
+
     // Load a TValue from memory
     // A: Rn or Kn or pointer (TValue)
     // B: int (optional 'A' pointer offset)
@@ -85,6 +91,11 @@ enum class IrCmd : uint8_t
     // A: Rn
     // B: tag
     STORE_TAG,
+
+    // Store an integer into the extra field of the TValue
+    // A: Rn
+    // B: int
+    STORE_EXTRA,
 
     // Store a pointer (*) into TValue
     // A: Rn
@@ -126,7 +137,7 @@ enum class IrCmd : uint8_t
     ADD_INT,
     SUB_INT,
 
-    // Add/Sub/Mul/Div/Mod two double numbers
+    // Add/Sub/Mul/Div/Idiv/Mod two double numbers
     // A, B: double
     // In final x64 lowering, B can also be Rn or Kn
     ADD_NUM,
@@ -166,6 +177,17 @@ enum class IrCmd : uint8_t
     // Get absolute value of the argument (math.abs)
     // A: double
     ABS_NUM,
+
+    // Add/Sub/Mul/Div/Idiv two vectors
+    // A, B: TValue
+    ADD_VEC,
+    SUB_VEC,
+    MUL_VEC,
+    DIV_VEC,
+
+    // Negate a vector
+    // A: TValue
+    UNM_VEC,
 
     // Compute Luau 'not' operation on destructured TValue
     // A: tag
@@ -251,7 +273,7 @@ enum class IrCmd : uint8_t
     // A: pointer (Table)
     DUP_TABLE,
 
-    // Insert an integer key into a table
+    // Insert an integer key into a table and return the pointer to inserted value (TValue)
     // A: pointer (Table)
     // B: int (key)
     TABLE_SETNUM,
@@ -280,8 +302,12 @@ enum class IrCmd : uint8_t
     // A: double
     NUM_TO_UINT,
 
+    // Converts a double number to a vector with the value in X/Y/Z
+    // A: double
+    NUM_TO_VECTOR,
+
     // Adjust stack top (L->top) to point at 'B' TValues *after* the specified register
-    // This is used to return muliple values
+    // This is used to return multiple values
     // A: Rn
     // B: int (offset)
     ADJUST_STACK_TO_REG,
@@ -419,6 +445,14 @@ enum class IrCmd : uint8_t
     // B: block/vmexit/undef
     // When undef is specified instead of a block, execution is aborted on check failure
     CHECK_NODE_VALUE,
+
+    // Guard against access at specified offset/size overflowing the buffer length
+    // A: pointer (buffer)
+    // B: int (offset)
+    // C: int (size)
+    // D: block/vmexit/undef
+    // When undef is specified instead of a block, execution is aborted on check failure
+    CHECK_BUFFER_LEN,
 
     // Special operations
 
@@ -600,6 +634,10 @@ enum class IrCmd : uint8_t
     BITCOUNTLZ_UINT,
     BITCOUNTRZ_UINT,
 
+    // Swap byte order in A
+    // A: int
+    BYTESWAP_UINT,
+
     // Calls native libm function with 1 or 2 arguments
     // A: builtin function ID
     // B: double
@@ -617,6 +655,71 @@ enum class IrCmd : uint8_t
     // Find or create an upval at the given level
     // A: Rn (level)
     FINDUPVAL,
+
+    // Read i8 (sign-extended to int) from buffer storage at specified offset
+    // A: pointer (buffer)
+    // B: int (offset)
+    BUFFER_READI8,
+
+    // Read u8 (zero-extended to int) from buffer storage at specified offset
+    // A: pointer (buffer)
+    // B: int (offset)
+    BUFFER_READU8,
+
+    // Write i8/u8 value (int argument is truncated) to buffer storage at specified offset
+    // A: pointer (buffer)
+    // B: int (offset)
+    // C: int (value)
+    BUFFER_WRITEI8,
+
+    // Read i16 (sign-extended to int) from buffer storage at specified offset
+    // A: pointer (buffer)
+    // B: int (offset)
+    BUFFER_READI16,
+
+    // Read u16 (zero-extended to int) from buffer storage at specified offset
+    // A: pointer (buffer)
+    // B: int (offset)
+    BUFFER_READU16,
+
+    // Write i16/u16 value (int argument is truncated) to buffer storage at specified offset
+    // A: pointer (buffer)
+    // B: int (offset)
+    // C: int (value)
+    BUFFER_WRITEI16,
+
+    // Read i32 value from buffer storage at specified offset
+    // A: pointer (buffer)
+    // B: int (offset)
+    BUFFER_READI32,
+
+    // Write i32/u32 value to buffer storage at specified offset
+    // A: pointer (buffer)
+    // B: int (offset)
+    // C: int (value)
+    BUFFER_WRITEI32,
+
+    // Read float value (converted to double) from buffer storage at specified offset
+    // A: pointer (buffer)
+    // B: int (offset)
+    BUFFER_READF32,
+
+    // Write float value (converted from double) to buffer storage at specified offset
+    // A: pointer (buffer)
+    // B: int (offset)
+    // C: double (value)
+    BUFFER_WRITEF32,
+
+    // Read double value from buffer storage at specified offset
+    // A: pointer (buffer)
+    // B: int (offset)
+    BUFFER_READF64,
+
+    // Write double value to buffer storage at specified offset
+    // A: pointer (buffer)
+    // B: int (offset)
+    // C: double (value)
+    BUFFER_WRITEF64,
 };
 
 enum class IrConstKind : uint8_t
@@ -853,11 +956,29 @@ struct BytecodeMapping
     uint32_t asmLocation;
 };
 
+struct BytecodeBlock
+{
+    // 'start' and 'finish' define an inclusive range of instructions which belong to the block
+    int startpc = -1;
+    int finishpc = -1;
+};
+
+struct BytecodeTypes
+{
+    uint8_t result = LBC_TYPE_ANY;
+    uint8_t a = LBC_TYPE_ANY;
+    uint8_t b = LBC_TYPE_ANY;
+    uint8_t c = LBC_TYPE_ANY;
+};
+
 struct IrFunction
 {
     std::vector<IrBlock> blocks;
     std::vector<IrInst> instructions;
     std::vector<IrConst> constants;
+
+    std::vector<BytecodeBlock> bcBlocks;
+    std::vector<BytecodeTypes> bcTypes;
 
     std::vector<BytecodeMapping> bcMapping;
     uint32_t entryBlock = 0;
@@ -865,7 +986,7 @@ struct IrFunction
 
     // For each instruction, an operand that can be used to recompute the value
     std::vector<IrOp> valueRestoreOps;
-    uint32_t validRestoreOpBlockIdx = 0;
+    std::vector<uint32_t> validRestoreOpBlocks;
 
     Proto* proto = nullptr;
     bool variadic = false;
@@ -874,13 +995,13 @@ struct IrFunction
 
     IrBlock& blockOp(IrOp op)
     {
-        LUAU_ASSERT(op.kind == IrOpKind::Block);
+        CODEGEN_ASSERT(op.kind == IrOpKind::Block);
         return blocks[op.index];
     }
 
     IrInst& instOp(IrOp op)
     {
-        LUAU_ASSERT(op.kind == IrOpKind::Inst);
+        CODEGEN_ASSERT(op.kind == IrOpKind::Inst);
         return instructions[op.index];
     }
 
@@ -894,7 +1015,7 @@ struct IrFunction
 
     IrConst& constOp(IrOp op)
     {
-        LUAU_ASSERT(op.kind == IrOpKind::Constant);
+        CODEGEN_ASSERT(op.kind == IrOpKind::Constant);
         return constants[op.index];
     }
 
@@ -902,7 +1023,7 @@ struct IrFunction
     {
         IrConst& value = constOp(op);
 
-        LUAU_ASSERT(value.kind == IrConstKind::Tag);
+        CODEGEN_ASSERT(value.kind == IrConstKind::Tag);
         return value.valueTag;
     }
 
@@ -923,7 +1044,7 @@ struct IrFunction
     {
         IrConst& value = constOp(op);
 
-        LUAU_ASSERT(value.kind == IrConstKind::Int);
+        CODEGEN_ASSERT(value.kind == IrConstKind::Int);
         return value.valueInt;
     }
 
@@ -944,7 +1065,7 @@ struct IrFunction
     {
         IrConst& value = constOp(op);
 
-        LUAU_ASSERT(value.kind == IrConstKind::Uint);
+        CODEGEN_ASSERT(value.kind == IrConstKind::Uint);
         return value.valueUint;
     }
 
@@ -965,7 +1086,7 @@ struct IrFunction
     {
         IrConst& value = constOp(op);
 
-        LUAU_ASSERT(value.kind == IrConstKind::Double);
+        CODEGEN_ASSERT(value.kind == IrConstKind::Double);
         return value.valueDouble;
     }
 
@@ -985,14 +1106,14 @@ struct IrFunction
     uint32_t getBlockIndex(const IrBlock& block) const
     {
         // Can only be called with blocks from our vector
-        LUAU_ASSERT(&block >= blocks.data() && &block <= blocks.data() + blocks.size());
+        CODEGEN_ASSERT(&block >= blocks.data() && &block <= blocks.data() + blocks.size());
         return uint32_t(&block - blocks.data());
     }
 
     uint32_t getInstIndex(const IrInst& inst) const
     {
         // Can only be called with instructions from our vector
-        LUAU_ASSERT(&inst >= instructions.data() && &inst <= instructions.data() + instructions.size());
+        CODEGEN_ASSERT(&inst >= instructions.data() && &inst <= instructions.data() + instructions.size());
         return uint32_t(&inst - instructions.data());
     }
 
@@ -1009,13 +1130,18 @@ struct IrFunction
         if (instIdx >= valueRestoreOps.size())
             return {};
 
-        const IrBlock& block = blocks[validRestoreOpBlockIdx];
-
-        // When spilled, values can only reference restore operands in the current block
+        // When spilled, values can only reference restore operands in the current block chain
         if (limitToCurrentBlock)
         {
-            if (instIdx < block.start || instIdx > block.finish)
-                return {};
+            for (uint32_t blockIdx : validRestoreOpBlocks)
+            {
+                const IrBlock& block = blocks[blockIdx];
+
+                if (instIdx >= block.start && instIdx <= block.finish)
+                    return valueRestoreOps[instIdx];
+            }
+
+            return {};
         }
 
         return valueRestoreOps[instIdx];
@@ -1025,35 +1151,45 @@ struct IrFunction
     {
         return findRestoreOp(getInstIndex(inst), limitToCurrentBlock);
     }
+
+    BytecodeTypes getBytecodeTypesAt(int pcpos) const
+    {
+        CODEGEN_ASSERT(pcpos >= 0);
+
+        if (size_t(pcpos) < bcTypes.size())
+            return bcTypes[pcpos];
+
+        return BytecodeTypes();
+    }
 };
 
 inline IrCondition conditionOp(IrOp op)
 {
-    LUAU_ASSERT(op.kind == IrOpKind::Condition);
+    CODEGEN_ASSERT(op.kind == IrOpKind::Condition);
     return IrCondition(op.index);
 }
 
 inline int vmRegOp(IrOp op)
 {
-    LUAU_ASSERT(op.kind == IrOpKind::VmReg);
+    CODEGEN_ASSERT(op.kind == IrOpKind::VmReg);
     return op.index;
 }
 
 inline int vmConstOp(IrOp op)
 {
-    LUAU_ASSERT(op.kind == IrOpKind::VmConst);
+    CODEGEN_ASSERT(op.kind == IrOpKind::VmConst);
     return op.index;
 }
 
 inline int vmUpvalueOp(IrOp op)
 {
-    LUAU_ASSERT(op.kind == IrOpKind::VmUpvalue);
+    CODEGEN_ASSERT(op.kind == IrOpKind::VmUpvalue);
     return op.index;
 }
 
 inline uint32_t vmExitOp(IrOp op)
 {
-    LUAU_ASSERT(op.kind == IrOpKind::VmExit);
+    CODEGEN_ASSERT(op.kind == IrOpKind::VmExit);
     return op.index;
 }
 

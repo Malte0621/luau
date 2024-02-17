@@ -2,8 +2,6 @@
 
 #include "Luau/GlobalTypes.h"
 
-LUAU_FASTFLAG(LuauInitializeStringMetatableInGlobalTypes)
-
 namespace Luau
 {
 
@@ -18,17 +16,15 @@ GlobalTypes::GlobalTypes(NotNull<BuiltinTypes> builtinTypes)
     globalScope->addBuiltinTypeBinding("string", TypeFun{{}, builtinTypes->stringType});
     globalScope->addBuiltinTypeBinding("boolean", TypeFun{{}, builtinTypes->booleanType});
     globalScope->addBuiltinTypeBinding("thread", TypeFun{{}, builtinTypes->threadType});
+    globalScope->addBuiltinTypeBinding("buffer", TypeFun{{}, builtinTypes->bufferType});
     globalScope->addBuiltinTypeBinding("unknown", TypeFun{{}, builtinTypes->unknownType});
     globalScope->addBuiltinTypeBinding("never", TypeFun{{}, builtinTypes->neverType});
 
-    if (FFlag::LuauInitializeStringMetatableInGlobalTypes)
-    {
-        unfreeze(*builtinTypes->arena);
-        TypeId stringMetatableTy = makeStringMetatable(builtinTypes);
-        asMutable(builtinTypes->stringType)->ty.emplace<PrimitiveType>(PrimitiveType::String, stringMetatableTy);
-        persist(stringMetatableTy);
-        freeze(*builtinTypes->arena);
-    }
+    unfreeze(*builtinTypes->arena);
+    TypeId stringMetatableTy = makeStringMetatable(builtinTypes);
+    asMutable(builtinTypes->stringType)->ty.emplace<PrimitiveType>(PrimitiveType::String, stringMetatableTy);
+    persist(stringMetatableTy);
+    freeze(*builtinTypes->arena);
 }
 
 } // namespace Luau

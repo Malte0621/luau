@@ -204,6 +204,12 @@ static void errorToString(std::ostream& stream, const T& err)
     else if constexpr (std::is_same_v<T, CheckedFunctionCallError>)
         stream << "CheckedFunctionCallError { expected = '" << toString(err.expected) << "', passed = '" << toString(err.passed)
                << "', checkedFunctionName = " << err.checkedFunctionName << ", argumentIndex = " << std::to_string(err.argumentIndex) << " }";
+    else if constexpr (std::is_same_v<T, NonStrictFunctionDefinitionError>)
+        stream << "NonStrictFunctionDefinitionError { functionName = '" + err.functionName + "', argument = '" + err.argument +
+                      "', argumentType = '" + toString(err.argumentType) + "' }";
+    else if constexpr (std::is_same_v<T, CheckedFunctionIncorrectArgs>)
+        stream << "CheckedFunction {  functionName = '" + err.functionName + ", expected = " + std::to_string(err.expected) +
+                      ", actual = " + std::to_string(err.actual) + "}";
     else
         static_assert(always_false_v<T>, "Non-exhaustive type switch");
 }

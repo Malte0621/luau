@@ -1,5 +1,7 @@
 // This file is part of the Luau programming language and is licensed under MIT License; see LICENSE.txt for details
 #include "Luau/CodeGen.h"
+#include "Luau/BytecodeUtils.h"
+#include "Luau/BytecodeSummary.h"
 
 #include "CodeGenLower.h"
 
@@ -42,6 +44,17 @@ static void logFunctionHeader(AssemblyBuilder& build, Proto* proto)
         build.logAppend("\n");
 }
 
+unsigned getInstructionCount(const Instruction* insns, const unsigned size)
+{
+    unsigned count = 0;
+    for (unsigned i = 0; i < size;)
+    {
+        ++count;
+        i += Luau::getOpLength(LuauOpcode(LUAU_INSN_OP(insns[i])));
+    }
+    return count;
+}
+
 template<typename AssemblyBuilder>
 static std::string getAssemblyImpl(AssemblyBuilder& build, const TValue* func, AssemblyOptions options, LoweringStats* stats)
 {
@@ -53,7 +66,11 @@ static std::string getAssemblyImpl(AssemblyBuilder& build, const TValue* func, A
     std::vector<Proto*> protos;
     gatherFunctions(protos, root, options.flags);
 
-    protos.erase(std::remove_if(protos.begin(), protos.end(), [](Proto* p) { return p == nullptr; }), protos.end());
+    protos.erase(std::remove_if(protos.begin(), protos.end(),
+                     [](Proto* p) {
+                         return p == nullptr;
+                     }),
+        protos.end());
 
     if (stats)
         stats->totalFunctions += unsigned(protos.size());
@@ -77,17 +94,46 @@ static std::string getAssemblyImpl(AssemblyBuilder& build, const TValue* func, A
     {
         IrBuilder ir;
         ir.buildFunctionIr(p);
+        unsigned asmSize = build.getCodeSize();
+        unsigned asmCount = build.getInstructionCount();
 
         if (options.includeAssembly || options.includeIr)
             logFunctionHeader(build, p);
 
-        if (!lowerFunction(ir, build, helpers, p, options, stats))
+        CodeGenCompilationResult result = CodeGenCompilationResult::Success;
+
+        if (!lowerFunction(ir, build, helpers, p, options, stats, result))
         {
             if (build.logText)
                 build.logAppend("; skipping (can't lower)\n");
 
+            asmSize = 0;
+            asmCount = 0;
+
             if (stats)
                 stats->skippedFunctions += 1;
+        }
+        else
+        {
+            asmSize = build.getCodeSize() - asmSize;
+            asmCount = build.getInstructionCount() - asmCount;
+        }
+
+        if (stats && (stats->functionStatsFlags & FunctionStats_Enable))
+        {
+            FunctionStats functionStat;
+            functionStat.name = p->debugname ? getstr(p->debugname) : "";
+            functionStat.line = p->linedefined;
+            functionStat.bcodeCount = getInstructionCount(p->code, p->sizecode);
+            functionStat.irCount = unsigned(ir.function.instructions.size());
+            functionStat.asmSize = asmSize;
+            functionStat.asmCount = asmCount;
+            if (stats->functionStatsFlags & FunctionStats_BytecodeSummary)
+            {
+                FunctionBytecodeSummary summary(FunctionBytecodeSummary::fromProto(p, 0));
+                functionStat.bytecodeSummary.push_back(summary.getCounts(0));
+            }
+            stats->functions.push_back(std::move(functionStat));
         }
 
         if (build.logText)
@@ -110,7 +156,7 @@ unsigned int getCpuFeaturesA64();
 
 std::string getAssembly(lua_State* L, int idx, AssemblyOptions options, LoweringStats* stats)
 {
-    LUAU_ASSERT(lua_isLfunction(L, idx));
+    CODEGEN_ASSERT(lua_isLfunction(L, idx));
     const TValue* func = luaA_toobject(L, idx);
 
     switch (options.target)
@@ -156,7 +202,7 @@ std::string getAssembly(lua_State* L, int idx, AssemblyOptions options, Lowering
     }
 
     default:
-        LUAU_ASSERT(!"Unknown target");
+        CODEGEN_ASSERT(!"Unknown target");
         return std::string();
     }
 }

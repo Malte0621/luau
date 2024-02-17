@@ -11,9 +11,9 @@ namespace
 {
 struct TypeStateFixture : BuiltinsFixture
 {
-    ScopedFastFlag dcr{"DebugLuauDeferredConstraintResolution", true};
+    ScopedFastFlag dcr{FFlag::DebugLuauDeferredConstraintResolution, true};
 };
-}
+} // namespace
 
 TEST_SUITE_BEGIN("TypeStatesTest");
 
@@ -101,7 +101,6 @@ TEST_CASE_FIXTURE(TypeStateFixture, "refine_a_local_and_then_assign_it")
 
     LUAU_REQUIRE_NO_ERRORS(result);
 }
-#endif
 
 TEST_CASE_FIXTURE(TypeStateFixture, "assign_a_local_and_then_refine_it")
 {
@@ -118,6 +117,7 @@ TEST_CASE_FIXTURE(TypeStateFixture, "assign_a_local_and_then_refine_it")
     LUAU_REQUIRE_ERROR_COUNT(1, result);
     CHECK("Type 'string' could not be converted into 'never'" == toString(result.errors[0]));
 }
+#endif
 
 TEST_CASE_FIXTURE(TypeStateFixture, "recursive_local_function")
 {
@@ -196,5 +196,260 @@ TEST_CASE_FIXTURE(TypeStateFixture, "parameter_x_was_constrained_by_two_types")
     LUAU_REQUIRE_NO_ERRORS(result);
     CHECK("(nil) -> number?" == toString(requireType("f")));
 }
+
+TEST_CASE_FIXTURE(TypeStateFixture, "parameter_x_is_some_type_or_optional_then_assigned_with_alternate_value")
+{
+    CheckResult result = check(R"(
+        local function f(x: number?)
+            x = x or 5
+            return x
+        end
+    )");
+
+    LUAU_REQUIRE_NO_ERRORS(result);
+    CHECK("(number?) -> number" == toString(requireType("f")));
+}
+
+TEST_CASE_FIXTURE(TypeStateFixture, "local_assigned_in_either_branches_that_falls_through")
+{
+    CheckResult result = check(R"(
+        local x = nil
+        if math.random() > 0.5 then
+            x = 5
+        else
+            x = "hello"
+        end
+        local y = x
+    )");
+
+    LUAU_REQUIRE_NO_ERRORS(result);
+    CHECK("number | string" == toString(requireType("y")));
+}
+
+TEST_CASE_FIXTURE(TypeStateFixture, "local_assigned_in_only_one_branch_that_falls_through")
+{
+    CheckResult result = check(R"(
+        local x = nil
+        if math.random() > 0.5 then
+            x = 5
+        end
+        local y = x
+    )");
+
+    LUAU_REQUIRE_NO_ERRORS(result);
+    CHECK("number?" == toString(requireType("y")));
+}
+
+TEST_CASE_FIXTURE(TypeStateFixture, "then_branch_assigns_and_else_branch_also_assigns_but_is_met_with_return")
+{
+    CheckResult result = check(R"(
+        local x = nil
+        if math.random() > 0.5 then
+            x = 5
+        else
+            x = "hello"
+            return
+        end
+        local y = x
+    )");
+
+    LUAU_REQUIRE_NO_ERRORS(result);
+    CHECK("number?" == toString(requireType("y")));
+}
+
+TEST_CASE_FIXTURE(TypeStateFixture, "then_branch_assigns_but_is_met_with_return_and_else_branch_assigns")
+{
+    CheckResult result = check(R"(
+        local x = nil
+        if math.random() > 0.5 then
+            x = 5
+            return
+        else
+            x = "hello"
+        end
+        local y = x
+    )");
+
+    LUAU_REQUIRE_NO_ERRORS(result);
+    CHECK("string?" == toString(requireType("y")));
+}
+
+TEST_CASE_FIXTURE(TypeStateFixture, "invalidate_type_refinements_upon_assignments")
+{
+    CheckResult result = check(R"(
+        type Ok<T> = { tag: "ok", val: T }
+        type Err<E> = { tag: "err", err: E }
+        type Result<T, E> = Ok<T> | Err<E>
+
+        local function f<T, E>(res: Result<T, E>)
+            assert(res.tag == "ok")
+            local tag: "ok", val: T = res.tag, res.val
+            res = { tag = "err" :: "err", err = (5 :: any) :: E }
+            local tag: "err", err: E = res.tag, res.err
+        end
+    )");
+
+    LUAU_REQUIRE_NO_ERRORS(result);
+}
+
+#if 0
+TEST_CASE_FIXTURE(TypeStateFixture, "local_t_is_assigned_a_fresh_table_with_x_assigned_a_union_and_then_assert_restricts_actual_outflow_of_types")
+{
+    CheckResult result = check(R"(
+        local t = nil
+
+        if math.random() > 0.5 then
+            t = {}
+            t.x = if math.random() > 0.5 then 5 else "hello"
+            assert(typeof(t.x) == "string")
+        else
+            t = {}
+            t.x = if math.random() > 0.5 then 7 else true
+            assert(typeof(t.x) == "boolean")
+        end
+
+        local x = t.x
+    )");
+
+    LUAU_REQUIRE_NO_ERRORS(result);
+    // CHECK("boolean | string" == toString(requireType("x")));
+    CHECK("boolean | number | number | string" == toString(requireType("x")));
+}
+#endif
+
+TEST_CASE_FIXTURE(TypeStateFixture, "captured_locals_are_unions_of_all_assignments")
+{
+    CheckResult result = check(R"(
+        local x = nil
+
+        function f()
+            print(x)
+            x = "five"
+        end
+
+        x = 5
+        f()
+    )");
+
+    LUAU_REQUIRE_NO_ERRORS(result);
+    CHECK("(number | string)?" == toString(requireTypeAtPosition({4, 18})));
+}
+
+TEST_CASE_FIXTURE(TypeStateFixture, "captured_locals_are_unions_of_all_assignments_2")
+{
+    CheckResult result = check(R"(
+        local t = {x = nil}
+
+        function f()
+            print(t.x)
+            t = {x = "five"}
+        end
+
+        t = {x = 5}
+        f()
+    )");
+
+    LUAU_REQUIRE_NO_ERRORS(result);
+    CHECK("{ x: nil } | { x: number } | { x: string }" == toString(requireTypeAtPosition({4, 18}), {true}));
+    CHECK("(number | string)?" == toString(requireTypeAtPosition({4, 20})));
+}
+
+TEST_CASE_FIXTURE(TypeStateFixture, "prototyped_recursive_functions")
+{
+    CheckResult result = check(R"(
+        local f
+        function f()
+            if math.random() > 0.5 then
+                f()
+            end
+        end
+    )");
+
+    LUAU_REQUIRE_NO_ERRORS(result);
+    CHECK("(() -> ())?" == toString(requireType("f")));
+}
+
+TEST_CASE_FIXTURE(BuiltinsFixture, "prototyped_recursive_functions_but_has_future_assignments")
+{
+    // early return if the flag isn't set since this is blocking gated commits
+    if (!FFlag::DebugLuauDeferredConstraintResolution)
+        return;
+
+    CheckResult result = check(R"(
+        local f
+        function f()
+            if math.random() > 0.5 then
+                f()
+            end
+        end
+        f = 5
+    )");
+
+    LUAU_REQUIRE_ERROR_COUNT(1, result);
+    CHECK("((() -> ()) | number)?" == toString(requireType("f")));
+}
+
+TEST_CASE_FIXTURE(TypeStateFixture, "prototyped_recursive_functions_but_has_previous_assignments")
+{
+    CheckResult result = check(R"(
+        local f
+        f = 5
+        function f()
+            if math.random() > 0.5 then
+                f()
+            end
+        end
+    )");
+
+    LUAU_REQUIRE_NO_ERRORS(result);
+    CHECK("((() -> ()) | number)?" == toString(requireType("f")));
+}
+
+TEST_CASE_FIXTURE(TypeStateFixture, "multiple_assignments_in_loops")
+{
+    CheckResult result = check(R"(
+        local x = nil
+
+        for i = 1, 10 do
+            x = 5
+            x = "hello"
+        end
+
+        print(x)
+    )");
+
+    LUAU_REQUIRE_NO_ERRORS(result);
+    CHECK("(number | string)?" == toString(requireType("x")));
+}
+
+TEST_CASE_FIXTURE(TypeStateFixture, "typestates_preserve_error_suppression")
+{
+    CheckResult result = check(R"(
+        local a: any = 51
+        a = "pickles" -- We'll have a new DefId for this iteration of `a`.  Its type must also be error-suppressing
+        print(a)
+    )");
+
+    LUAU_REQUIRE_NO_ERRORS(result);
+    CHECK("*error-type* | string" == toString(requireTypeAtPosition({3, 14}), {true}));
+}
+
+
+TEST_CASE_FIXTURE(BuiltinsFixture, "typestates_preserve_error_suppression_properties")
+{
+    // early return if the flag isn't set since this is blocking gated commits
+    if (!FFlag::DebugLuauDeferredConstraintResolution)
+        return;
+
+    CheckResult result = check(R"(
+        local a: {x: any} = {x = 51}
+        a.x = "pickles" -- We'll have a new DefId for this iteration of `a.x`.  Its type must also be error-suppressing
+        print(a.x)
+    )");
+
+    LUAU_REQUIRE_NO_ERRORS(result);
+    CHECK("*error-type* | string" == toString(requireTypeAtPosition({3, 16}), {true}));
+}
+
 
 TEST_SUITE_END();

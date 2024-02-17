@@ -18,10 +18,13 @@
 #include <sstream>
 #include <string_view>
 #include <iostream>
+#include <fstream>
 
 static const char* mainModuleName = "MainModule";
 
 LUAU_FASTFLAG(DebugLuauDeferredConstraintResolution);
+LUAU_FASTFLAG(DebugLuauFreezeArena);
+LUAU_FASTFLAG(DebugLuauLogSolverToJsonFile)
 
 extern std::optional<unsigned> randomSeed; // tests/main.cpp
 
@@ -136,7 +139,7 @@ const Config& TestConfigResolver::getConfig(const ModuleName& name) const
 }
 
 Fixture::Fixture(bool freeze, bool prepareAutocomplete)
-    : sff_DebugLuauFreezeArena("DebugLuauFreezeArena", freeze)
+    : sff_DebugLuauFreezeArena(FFlag::DebugLuauFreezeArena, freeze)
     , frontend(&fileResolver, &configResolver,
           {/* retainFullTypeGraphs= */ true, /* forAutocomplete */ false, /* runLintChecks */ false, /* randomConstraintResolutionSeed */ randomSeed})
     , builtinTypes(frontend.builtinTypes)
@@ -149,6 +152,21 @@ Fixture::Fixture(bool freeze, bool prepareAutocomplete)
     Luau::freeze(frontend.globalsForAutocomplete.globalTypes);
 
     Luau::setPrintLine([](auto s) {});
+
+    if (FFlag::DebugLuauLogSolverToJsonFile)
+    {
+        frontend.writeJsonLog = [&](const Luau::ModuleName& moduleName, std::string log) {
+            std::string path = moduleName + ".log.json";
+            size_t pos = moduleName.find_last_of('/');
+            if (pos != std::string::npos)
+                path = moduleName.substr(pos + 1);
+
+            std::ofstream os(path);
+
+            os << log << std::endl;
+            MESSAGE("Wrote JSON log to ", path);
+        };
+    }
 }
 
 Fixture::~Fixture()
@@ -176,7 +194,7 @@ AstStatBlock* Fixture::parse(const std::string& source, const ParseOptions& pars
             {
                 Mode mode = sourceModule->mode ? *sourceModule->mode : Mode::Strict;
                 ModulePtr module = Luau::check(*sourceModule, mode, {}, builtinTypes, NotNull{&ice}, NotNull{&moduleResolver}, NotNull{&fileResolver},
-                    frontend.globals.globalScope, /*prepareModuleScope*/ nullptr, frontend.options, {});
+                    frontend.globals.globalScope, /*prepareModuleScope*/ nullptr, frontend.options, {}, false, {});
 
                 Luau::lint(sourceModule->root, *sourceModule->names, frontend.globals.globalScope, module.get(), sourceModule->hotcomments, {});
             }
@@ -412,7 +430,7 @@ TypeId Fixture::requireTypeAlias(const std::string& name)
 {
     std::optional<TypeId> ty = lookupType(name);
     REQUIRE(ty);
-    return *ty;
+    return follow(*ty);
 }
 
 TypeId Fixture::requireExportedType(const ModuleName& moduleName, const std::string& name)

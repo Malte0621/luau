@@ -160,7 +160,6 @@ int luau_load(lua_State* L, const char* chunkname, const char* data, size_t size
     uint8_t version = read<uint8_t>(data, size, offset);
 
 
-
     // 0 means the rest of the bytecode is the error message
     if (version == 0)
     {
@@ -284,6 +283,17 @@ int luau_load(lua_State* L, const char* chunkname, const char* data, size_t size
             {
                 double v = read<double>(data, size, offset);
                 setnvalue(&p->k[j], v);
+                break;
+            }
+
+            case LBC_CONSTANT_VECTOR:
+            {
+                float x = read<float>(data, size, offset);
+                float y = read<float>(data, size, offset);
+                float z = read<float>(data, size, offset);
+                float w = read<float>(data, size, offset);
+                (void)w;
+                setvvalue(&p->k[j], x, y, z, w);
                 break;
             }
 

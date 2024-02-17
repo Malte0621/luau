@@ -515,9 +515,9 @@ TEST_CASE_FIXTURE(Fixture, "free_type_is_equal_to_an_lvalue")
     LUAU_REQUIRE_NO_ERRORS(result);
 
     if (FFlag::DebugLuauDeferredConstraintResolution)
-        CHECK_EQ(toString(requireTypeAtPosition({3, 33})), "unknown");       // a == b
+        CHECK_EQ(toString(requireTypeAtPosition({3, 33})), "unknown"); // a == b
     else
-        CHECK_EQ(toString(requireTypeAtPosition({3, 33})), "a");       // a == b
+        CHECK_EQ(toString(requireTypeAtPosition({3, 33})), "a"); // a == b
 
     CHECK_EQ(toString(requireTypeAtPosition({3, 36})), "string?"); // a == b
 }
@@ -1540,6 +1540,23 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "refine_thread")
     CHECK_EQ("number", toString(requireTypeAtPosition({5, 28})));
 }
 
+TEST_CASE_FIXTURE(BuiltinsFixture, "refine_buffer")
+{
+    CheckResult result = check(R"(
+        local function f(x: number | buffer)
+            if typeof(x) == "buffer" then
+                local foo = x
+            else
+                local foo = x
+            end
+        end
+    )");
+
+    LUAU_REQUIRE_NO_ERRORS(result);
+    CHECK_EQ("buffer", toString(requireTypeAtPosition({3, 28})));
+    CHECK_EQ("number", toString(requireTypeAtPosition({5, 28})));
+}
+
 TEST_CASE_FIXTURE(BuiltinsFixture, "falsiness_of_TruthyPredicate_narrows_into_nil")
 {
     CheckResult result = check(R"(
@@ -1838,7 +1855,9 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "type_annotations_arent_relevant_when_doing_d
 
 TEST_CASE_FIXTURE(BuiltinsFixture, "function_call_with_colon_after_refining_not_to_be_nil")
 {
-    ScopedFastFlag sff{"DebugLuauDeferredConstraintResolution", true};
+    // don't run this test at all without DCR
+    if (!FFlag::DebugLuauDeferredConstraintResolution)
+        return;
 
     CheckResult result = check(R"(
         --!strict
@@ -1904,31 +1923,29 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "many_refinements_on_val")
 
 TEST_CASE_FIXTURE(BuiltinsFixture, "refine_unknown_to_table")
 {
-    ScopedFastFlag sff{"DebugLuauDeferredConstraintResolution", true};
+    ScopedFastFlag sff{FFlag::DebugLuauDeferredConstraintResolution, true};
     // this test is DCR-only as an instance of DCR fixing a bug in the old solver
 
     CheckResult result = check(R"(
-        local idx, val
-
         local function f(a: unknown)
             if typeof(a) == "table" then
                 for i, v in a do
-                    idx = i
-                    val = v
+                    return i, v
                 end
             end
+
+            error("")
         end
     )");
 
     LUAU_REQUIRE_NO_ERRORS(result);
 
-    CHECK_EQ("unknown", toString(requireType("idx")));
-    CHECK_EQ("unknown", toString(requireType("val")));
+    CHECK_EQ("(unknown) -> (unknown, unknown)", toString(requireType("f")));
 }
 
 TEST_CASE_FIXTURE(BuiltinsFixture, "conditional_refinement_should_stay_error_suppressing")
 {
-    ScopedFastFlag sff{"DebugLuauDeferredConstraintResolution", true};
+    ScopedFastFlag sff{FFlag::DebugLuauDeferredConstraintResolution, true};
     // this test is DCR-only as an instance of DCR fixing a bug in the old solver
 
     CheckResult result = check(R"(
