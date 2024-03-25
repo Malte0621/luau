@@ -14,7 +14,15 @@
 namespace Luau
 {
 
+enum class ValueContext;
 struct Scope;
+
+// if resultType is a freeType, assignmentType <: freeType <: resultType bounds
+struct EqualityConstraint
+{
+    TypeId resultType;
+    TypeId assignmentType;
+};
 
 // subType <: superType
 struct SubtypeConstraint
@@ -40,6 +48,8 @@ struct GeneralizationConstraint
 {
     TypeId generalizedType;
     TypeId sourceType;
+
+    std::vector<TypeId> interiorTypes;
 };
 
 // subType ~ inst superType
@@ -102,6 +112,7 @@ struct FunctionCheckConstraint
     TypePackId argsPack;
 
     class AstExprCall* callSite = nullptr;
+    NotNull<DenseHashMap<const AstExpr*, TypeId>> astTypes;
     NotNull<DenseHashMap<const AstExpr*, TypeId>> astExpectedTypes;
 };
 
@@ -145,6 +156,16 @@ struct HasPropConstraint
     TypeId resultType;
     TypeId subjectType;
     std::string prop;
+    ValueContext context;
+
+    // We want to track if this `HasPropConstraint` comes from a conditional.
+    // If it does, we're going to change the behavior of property look-up a bit.
+    // In particular, we're going to return `unknownType` for property lookups
+    // on `table` or inexact table types where the property is not present.
+    //
+    // This allows us to refine table types to have additional properties
+    // without reporting errors in typechecking on the property tests.
+    bool inConditional = false;
 
     // HACK: We presently need types like true|false or string|"hello" when
     // deciding whether a particular literal expression should have a singleton
@@ -180,6 +201,19 @@ struct SetPropConstraint
     TypeId subjectType;
     std::vector<std::string> path;
     TypeId propType;
+};
+
+// resultType ~ hasIndexer subjectType indexType
+//
+// If the subject type is a table or table-like thing that supports indexing,
+// populate the type result with the result type of such an index operation.
+//
+// If the subject is not indexable, resultType is bound to errorType.
+struct HasIndexerConstraint
+{
+    TypeId resultType;
+    TypeId subjectType;
+    TypeId indexType;
 };
 
 // result ~ setIndexer subjectType indexType propType
@@ -256,7 +290,8 @@ struct ReducePackConstraint
 
 using ConstraintV = Variant<SubtypeConstraint, PackSubtypeConstraint, GeneralizationConstraint, InstantiationConstraint, IterableConstraint,
     NameConstraint, TypeAliasExpansionConstraint, FunctionCallConstraint, FunctionCheckConstraint, PrimitiveTypeConstraint, HasPropConstraint,
-    SetPropConstraint, SetIndexerConstraint, SingletonOrTopTypeConstraint, UnpackConstraint, SetOpConstraint, ReduceConstraint, ReducePackConstraint>;
+    SetPropConstraint, HasIndexerConstraint, SetIndexerConstraint, SingletonOrTopTypeConstraint, UnpackConstraint, SetOpConstraint, ReduceConstraint, ReducePackConstraint,
+    EqualityConstraint>;
 
 struct Constraint
 {

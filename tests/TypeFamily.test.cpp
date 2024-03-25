@@ -509,7 +509,7 @@ TEST_CASE_FIXTURE(ClassFixture, "keyof_type_family_works_on_classes")
     CheckResult result = check(R"(
         type KeysOfMyObject = keyof<BaseClass>
 
-        local function ok(idx: KeysOfMyObject): "BaseMethod" | "BaseField" return idx end
+        local function ok(idx: KeysOfMyObject): "BaseMethod" | "BaseField" | "Touched" return idx end
         local function err(idx: KeysOfMyObject): "BaseMethod" return idx end
     )");
 
@@ -518,7 +518,7 @@ TEST_CASE_FIXTURE(ClassFixture, "keyof_type_family_works_on_classes")
     TypePackMismatch* tpm = get<TypePackMismatch>(result.errors[0]);
     REQUIRE(tpm);
     CHECK_EQ("\"BaseMethod\"", toString(tpm->wantedTp));
-    CHECK_EQ("\"BaseField\" | \"BaseMethod\"", toString(tpm->givenTp));
+    CHECK_EQ("\"BaseField\" | \"BaseMethod\" | \"Touched\"", toString(tpm->givenTp));
 }
 
 TEST_CASE_FIXTURE(ClassFixture, "keyof_type_family_errors_if_it_has_nonclass_part")
@@ -550,6 +550,29 @@ TEST_CASE_FIXTURE(ClassFixture, "keyof_type_family_common_subset_if_union_of_dif
     )");
 
     LUAU_REQUIRE_NO_ERRORS(result);
+}
+
+TEST_CASE_FIXTURE(ClassFixture, "vector2_multiply_is_overloaded")
+{
+    if (!FFlag::DebugLuauDeferredConstraintResolution)
+        return;
+
+    CheckResult result = check(R"(
+        local v = Vector2.New(1, 2)
+
+        local v2 = v * 1.5
+        local v3 = v * v
+        local v4 = v * "Hello" -- line 5
+    )");
+
+    LUAU_REQUIRE_ERROR_COUNT(1, result);
+
+    CHECK(5 == result.errors[0].location.begin.line);
+    CHECK(5 == result.errors[0].location.end.line);
+
+    CHECK("Vector2" == toString(requireType("v2")));
+    CHECK("Vector2" == toString(requireType("v3")));
+    CHECK("mul<Vector2, string>" == toString(requireType("v4")));
 }
 
 TEST_CASE_FIXTURE(BuiltinsFixture, "keyof_rfc_example")

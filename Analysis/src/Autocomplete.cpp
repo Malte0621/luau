@@ -14,9 +14,7 @@
 #include <utility>
 
 LUAU_FASTFLAG(DebugLuauDeferredConstraintResolution);
-LUAU_FASTFLAG(DebugLuauReadWriteProperties);
 LUAU_FASTFLAGVARIABLE(LuauAutocompleteStringLiteralBounds, false);
-LUAU_FASTFLAGVARIABLE(LuauAutocompleteTableKeysNoInitialCharacter, false);
 
 static const std::unordered_set<std::string> kStatementStartingKeywords = {
     "while", "if", "local", "repeat", "function", "do", "for", "return", "break", "continue", "type", "export"};
@@ -277,9 +275,9 @@ static void autocompleteProps(const Module& module, TypeArena* typeArena, NotNul
             {
                 Luau::TypeId type;
 
-                if (FFlag::DebugLuauReadWriteProperties)
+                if (FFlag::DebugLuauDeferredConstraintResolution)
                 {
-                    if (auto ty = prop.readType())
+                    if (auto ty = prop.readTy)
                         type = follow(*ty);
                     else
                         continue;
@@ -1742,7 +1740,7 @@ static AutocompleteResult autocomplete(const SourceModule& sourceModule, const M
             }
         }
     }
-    else if (AstExprTable* exprTable = node->as<AstExprTable>(); exprTable && FFlag::LuauAutocompleteTableKeysNoInitialCharacter)
+    else if (AstExprTable* exprTable = node->as<AstExprTable>())
     {
         AutocompleteEntryMap result;
 

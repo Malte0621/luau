@@ -25,6 +25,24 @@ LUAU_FASTFLAG(LuauReadWritePropertySyntax);
 
 TEST_SUITE_BEGIN("TableTests");
 
+TEST_CASE_FIXTURE(BuiltinsFixture, "LUAU_ASSERT_arg_exprs_doesnt_trigger_assert")
+{
+    CheckResult result = check(R"(
+local FadeValue = {}
+function FadeValue.new(finalCallback)
+	local self = setmetatable({}, FadeValue)
+	self.finalCallback = finalCallback
+	return self
+end
+
+function FadeValue:destroy()
+	self.finalCallback()
+	self.finalCallback = nil
+end
+)");
+    
+}
+
 TEST_CASE_FIXTURE(Fixture, "basic")
 {
     CheckResult result = check("local t = {foo = \"bar\", baz = 9, quux = nil}");
@@ -357,7 +375,7 @@ TEST_CASE_FIXTURE(Fixture, "open_table_unification_2")
     LUAU_REQUIRE_ERROR_COUNT(1, result);
     TypeError& err = result.errors[0];
     MissingProperties* error = get<MissingProperties>(err);
-    REQUIRE(error != nullptr);
+    REQUIRE_MESSAGE(error != nullptr, "Expected MissingProperties but got " << toString(err));
     REQUIRE(error->properties.size() == 1);
 
     CHECK_EQ("y", error->properties[0]);
@@ -426,7 +444,7 @@ TEST_CASE_FIXTURE(Fixture, "table_param_width_subtyping_2")
     LUAU_REQUIRE_ERROR_COUNT(1, result);
 
     MissingProperties* error = get<MissingProperties>(result.errors[0]);
-    REQUIRE(error != nullptr);
+    REQUIRE_MESSAGE(error != nullptr, "Expected MissingProperties but got " << toString(result.errors[0]));
     REQUIRE(error->properties.size() == 1);
 
     CHECK_EQ("baz", error->properties[0]);
@@ -446,7 +464,7 @@ TEST_CASE_FIXTURE(Fixture, "table_param_width_subtyping_3")
     LUAU_REQUIRE_ERROR_COUNT(1, result);
     TypeError& err = result.errors[0];
     MissingProperties* error = get<MissingProperties>(err);
-    REQUIRE(error != nullptr);
+    REQUIRE_MESSAGE(error != nullptr, "Expected MissingProperties but got " << toString(err));
     REQUIRE(error->properties.size() == 1);
 
     CHECK_EQ("baz", error->properties[0]);
@@ -460,52 +478,6 @@ TEST_CASE_FIXTURE(Fixture, "table_param_width_subtyping_3")
 
     CHECK_EQ(err.location, (Location{Position{6, 8}, Position{6, 9}}));
 }
-
-#if 0
-TEST_CASE_FIXTURE(Fixture, "table_param_width_subtyping_2")
-{
-    CheckResult result = check(R"(
-        function id(x)
-            return x
-        end
-
-        function foo(o)
-            id(o.x)
-            id(o.y)
-            return o
-        end
-
-        local a = {x=55, y=nil, w=3.14159}
-        local b = {}
-        b.x = 1
-        b.y = 'hello'
-        b.z = 'something extra!'
-
-        local q = foo(a) -- line 17
-        local w = foo(b) -- line 18
-    )");
-
-    LUAU_REQUIRE_NO_ERRORS(result);
-
-    TypeId qType = requireType("q");
-    const TableType* qTable = get<TableType>(qType);
-    REQUIRE(qType != nullptr);
-
-    CHECK(qTable->props.find("x") != qTable->props.end());
-    CHECK(qTable->props.find("y") != qTable->props.end());
-    CHECK(qTable->props.find("z") == qTable->props.end());
-    CHECK(qTable->props.find("w") != qTable->props.end());
-
-    TypeId wType = requireType("w");
-    const TableType* wTable = get<TableType>(wType);
-    REQUIRE(wTable != nullptr);
-
-    CHECK(wTable->props.find("x") != wTable->props.end());
-    CHECK(wTable->props.find("y") != wTable->props.end());
-    CHECK(wTable->props.find("z") != wTable->props.end());
-    CHECK(wTable->props.find("w") == wTable->props.end());
-}
-#endif
 
 TEST_CASE_FIXTURE(Fixture, "table_unification_4")
 {
@@ -680,7 +652,8 @@ TEST_CASE_FIXTURE(Fixture, "indexers_get_quantified_too")
 
     REQUIRE("number" == toString(indexer.indexType));
 
-    REQUIRE(nullptr != get<GenericType>(follow(indexer.indexResultType)));
+    TypeId indexResultType = follow(indexer.indexResultType);
+    REQUIRE_MESSAGE(get<GenericType>(indexResultType), "Expected generic but got " << toString(indexResultType));
 }
 
 TEST_CASE_FIXTURE(Fixture, "indexers_quantification_2")
@@ -1077,11 +1050,37 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "meta_add_inferred")
 
 TEST_CASE_FIXTURE(BuiltinsFixture, "meta_add_both_ways")
 {
+    ScopedFastFlag sff{FFlag::DebugLuauDeferredConstraintResolution, false};
+
     CheckResult result = check(R"(
         type VectorMt = { __add: (Vector, number) -> Vector }
         local vectorMt: VectorMt
         type Vector = typeof(setmetatable({}, vectorMt))
         local a: Vector
+
+        local b = a + 2
+        local c = 2 + a
+    )");
+    LUAU_REQUIRE_NO_ERRORS(result);
+
+    CHECK_EQ("Vector", toString(requireType("a")));
+    CHECK_EQ(*requireType("a"), *requireType("b"));
+    CHECK_EQ(*requireType("a"), *requireType("c"));
+}
+
+TEST_CASE_FIXTURE(BuiltinsFixture, "meta_add_both_ways_lti")
+{
+    ScopedFastFlag sff{FFlag::DebugLuauDeferredConstraintResolution, true};
+
+    CheckResult result = check(R"(
+        local vectorMt = {}
+
+        function vectorMt.__add(self: Vector, other: number)
+            return self
+        end
+
+        type Vector = typeof(setmetatable({}, vectorMt))
+        local a: Vector = setmetatable({}, vectorMt)
 
         local b = a + 2
         local c = 2 + a
@@ -1570,7 +1569,7 @@ TEST_CASE_FIXTURE(Fixture, "right_table_missing_key2")
     LUAU_REQUIRE_ERROR_COUNT(1, result);
 
     MissingProperties* mp = get<MissingProperties>(result.errors[0]);
-    REQUIRE(mp);
+    REQUIRE_MESSAGE(mp, "Expected MissingProperties but got " << toString(result.errors[0]));
     CHECK_EQ(mp->context, MissingProperties::Missing);
     REQUIRE_EQ(1, mp->properties.size());
     CHECK_EQ(mp->properties[0], "a");
@@ -1664,7 +1663,7 @@ TEST_CASE_FIXTURE(Fixture, "casting_tables_with_props_into_table_with_indexer4")
     if (FFlag::DebugLuauDeferredConstraintResolution)
     {
         LUAU_REQUIRE_ERROR_COUNT(1, result);
-        CHECK(toString(result.errors[0]) == "Type 'string' could not be converted into 'number'");
+        CHECK(toString(result.errors[0]) == "Type 'number' could not be converted into 'string' in an invariant context");
     }
     else
     {
@@ -1685,7 +1684,7 @@ TEST_CASE_FIXTURE(Fixture, "table_subtyping_with_missing_props_dont_report_multi
 
     if (FFlag::DebugLuauDeferredConstraintResolution)
     {
-        CHECK_EQ("Type pack '{ x: number }' could not be converted into '{ x: number, y: number, z: number }'"
+        CHECK_EQ("Type pack '{ x: number }' could not be converted into '{ x: number, y: number, z: number }';"
                  " at [0], { x: number } is not a subtype of { x: number, y: number, z: number }",
             toString(result.errors[0]));
     }
@@ -2176,7 +2175,7 @@ local b: B = a
     LUAU_REQUIRE_ERRORS(result);
 
     if (FFlag::DebugLuauDeferredConstraintResolution)
-        CHECK(toString(result.errors.at(0)) == R"(Type 'a' could not be converted into 'B'; at ["y"], number is not exactly string)");
+        CHECK(toString(result.errors.at(0)) == R"(Type 'a' could not be converted into 'B'; at [read "y"], number is not exactly string)");
     else
     {
         const std::string expected = R"(Type 'A' could not be converted into 'B'
@@ -2203,7 +2202,7 @@ local b: B = a
     LUAU_REQUIRE_ERRORS(result);
 
     if (FFlag::DebugLuauDeferredConstraintResolution)
-        CHECK(toString(result.errors.at(0)) == R"(Type 'a' could not be converted into 'B'; at ["b"]["y"], number is not exactly string)");
+        CHECK(toString(result.errors.at(0)) == R"(Type 'a' could not be converted into 'B'; at [read "b"][read "y"], number is not exactly string)");
     else
     {
         const std::string expected = R"(Type 'A' could not be converted into 'B'
@@ -2720,6 +2719,23 @@ TEST_CASE_FIXTURE(Fixture, "tables_get_names_from_their_locals")
     LUAU_REQUIRE_NO_ERRORS(result);
 
     CHECK_EQ("T", toString(requireType("T")));
+}
+
+TEST_CASE_FIXTURE(Fixture, "should_not_unblock_table_type_twice")
+{
+    ScopedFastFlag sff(FFlag::DebugLuauDeferredConstraintResolution, true);
+
+    check(R"(
+        local timer = peek(timerQueue)
+        while timer ~= nil do
+            if timer.startTime <= currentTime then
+                timer.isQueued = true
+            end
+            timer = peek(timerQueue)
+        end
+    )");
+
+    // Just checking this is enough to satisfy the original bug.
 }
 
 TEST_CASE_FIXTURE(Fixture, "generalize_table_argument")
@@ -3979,15 +3995,18 @@ TEST_CASE_FIXTURE(Fixture, "identify_all_problematic_table_fields")
 
     LUAU_REQUIRE_ERROR_COUNT(1, result);
 
-    std::string expected = "Type 'a' could not be converted into 'T'; at [\"a\"], string is not exactly number"
-                           "\n\tat [\"b\"], boolean is not exactly string"
-                           "\n\tat [\"c\"], number is not exactly boolean";
+    std::string expected = "Type 'a' could not be converted into 'T'; at [read \"a\"], string is not exactly number"
+                           "\n\tat [read \"b\"], boolean is not exactly string"
+                           "\n\tat [read \"c\"], number is not exactly boolean";
     CHECK(toString(result.errors[0]) == expected);
 }
 
 TEST_CASE_FIXTURE(Fixture, "read_and_write_only_table_properties_are_unsupported")
 {
-    ScopedFastFlag sff{FFlag::LuauReadWritePropertySyntax, true};
+    ScopedFastFlag sff[] = {
+        {FFlag::LuauReadWritePropertySyntax, true},
+        {FFlag::DebugLuauDeferredConstraintResolution, false},
+    };
 
     CheckResult result = check(R"(
         type W = {read x: number}
@@ -4026,6 +4045,21 @@ TEST_CASE_FIXTURE(Fixture, "read_ond_write_only_indexers_are_unsupported")
     CHECK(Location{{2, 18}, {2, 23}} == result.errors[1].location);
 }
 
+TEST_CASE_FIXTURE(Fixture, "infer_write_property")
+{
+    ScopedFastFlag sff{FFlag::DebugLuauDeferredConstraintResolution, true};
+
+    CheckResult result = check(R"(
+        function f(t)
+            t.y = 1
+        end
+    )");
+
+    LUAU_REQUIRE_NO_ERRORS(result);
+
+    CHECK("({ y: number }) -> ()" == toString(requireType("f")));
+}
+
 TEST_CASE_FIXTURE(Fixture, "table_subtyping_error_suppression")
 {
     CheckResult result = check(R"(
@@ -4056,5 +4090,202 @@ TEST_CASE_FIXTURE(Fixture, "table_subtyping_error_suppression")
         CHECK_EQ("{| x: string, y: number |}", toString(tm->givenType));
     }
 }
+
+TEST_CASE_FIXTURE(Fixture, "write_to_read_only_property")
+{
+    ScopedFastFlag sff{FFlag::DebugLuauDeferredConstraintResolution, true};
+
+    CheckResult result = check(R"(
+        function f(t: {read x: number})
+            t.x = 5
+        end
+    )");
+
+    LUAU_REQUIRE_ERROR_COUNT(1, result);
+
+    CHECK("Property x of table '{ read x: number }' is read-only" == toString(result.errors[0]));
+
+    PropertyAccessViolation* pav = get<PropertyAccessViolation>(result.errors[0]);
+    REQUIRE(pav);
+
+    CHECK("{ read x: number }" == toString(pav->table, {true}));
+    CHECK("x" == pav->key);
+    CHECK(PropertyAccessViolation::CannotWrite == pav->context);
+}
+
+TEST_CASE_FIXTURE(Fixture, "write_to_unusually_named_read_only_property")
+{
+    ScopedFastFlag sff{FFlag::DebugLuauDeferredConstraintResolution, true};
+
+    CheckResult result = check(R"(
+        function f(t: {read ["hello world"]: number})
+            t["hello world"] = 5
+        end
+    )");
+
+    LUAU_REQUIRE_ERROR_COUNT(1, result);
+
+    CHECK("Property \"hello world\" of table '{ read [\"hello world\"]: number }' is read-only" == toString(result.errors[0]));
+}
+
+TEST_CASE_FIXTURE(Fixture, "write_annotations_are_unsupported_even_with_the_new_solver")
+{
+    ScopedFastFlag sff{FFlag::DebugLuauDeferredConstraintResolution, true};
+
+    CheckResult result = check(R"(
+        function f(t: {write foo: number})
+        end
+    )");
+
+    LUAU_REQUIRE_ERROR_COUNT(1, result);
+
+    CHECK("write keyword is illegal here" == toString(result.errors[0]));
+    CHECK(Location{{1, 23}, {1, 28}} == result.errors[0].location);
+}
+
+TEST_CASE_FIXTURE(Fixture, "read_and_write_only_table_properties_are_unsupported")
+{
+    ScopedFastFlag sff[] = {
+        {FFlag::LuauReadWritePropertySyntax, true},
+        {FFlag::DebugLuauDeferredConstraintResolution, false}
+    };
+
+    CheckResult result = check(R"(
+        type W = {read x: number}
+        type X = {write x: boolean}
+
+        type Y = {read ["prop"]: boolean}
+        type Z = {write ["prop"]: string}
+    )");
+
+    LUAU_REQUIRE_ERROR_COUNT(4, result);
+
+    CHECK("read keyword is illegal here" == toString(result.errors[0]));
+    CHECK(Location{{1, 18}, {1, 22}} == result.errors[0].location);
+    CHECK("write keyword is illegal here" == toString(result.errors[1]));
+    CHECK(Location{{2, 18}, {2, 23}} == result.errors[1].location);
+    CHECK("read keyword is illegal here" == toString(result.errors[2]));
+    CHECK(Location{{4, 18}, {4, 22}} == result.errors[2].location);
+    CHECK("write keyword is illegal here" == toString(result.errors[3]));
+    CHECK(Location{{5, 18}, {5, 23}} == result.errors[3].location);
+}
+
+TEST_CASE_FIXTURE(Fixture, "read_ond_write_only_indexers_are_unsupported")
+{
+    ScopedFastFlag sff[] = {
+        {FFlag::LuauReadWritePropertySyntax, true},
+        {FFlag::DebugLuauDeferredConstraintResolution, false}
+    };
+
+    CheckResult result = check(R"(
+        type T = {read [string]: number}
+        type U = {write [string]: boolean}
+    )");
+
+    LUAU_REQUIRE_ERROR_COUNT(2, result);
+
+    CHECK("read keyword is illegal here" == toString(result.errors[0]));
+    CHECK(Location{{1, 18}, {1, 22}} == result.errors[0].location);
+    CHECK("write keyword is illegal here" == toString(result.errors[1]));
+    CHECK(Location{{2, 18}, {2, 23}} == result.errors[1].location);
+}
+
+TEST_CASE_FIXTURE(Fixture, "table_writes_introduce_write_properties")
+{
+    ScopedFastFlag sff[] = {
+        {FFlag::LuauReadWritePropertySyntax, true},
+        {FFlag::DebugLuauDeferredConstraintResolution, true}
+    };
+
+    CheckResult result = check(R"(
+        function oc(player, speaker)
+            local head = speaker.Character:FindFirstChild('Head')
+            speaker.Character = player[1].Character
+        end
+    )");
+
+    LUAU_REQUIRE_NO_ERRORS(result);
+
+    CHECK("<a, b...>({{ read Character: t1 }}, { Character: t1 }) -> () "
+        "where "
+        "t1 = { read FindFirstChild: (t1, string) -> (a, b...) }" == toString(requireType("oc")));
+}
+
+TEST_CASE_FIXTURE(BuiltinsFixture, "tables_can_have_both_metatables_and_indexers")
+{
+    CheckResult result = check(R"(
+        local a = {}
+        a[1] = 5
+        a[2] = 17
+
+        local t = {}
+        setmetatable(a, t)
+
+        local c = a[1]
+        print(a[1])
+    )");
+
+    LUAU_REQUIRE_NO_ERRORS(result);
+
+    CHECK("number" == toString(requireType("c")));
+}
+
+TEST_CASE_FIXTURE(Fixture, "refined_thing_can_be_an_array")
+{
+    CheckResult result = check(R"(
+        function foo(x, y)
+            if x then
+                return x[1]
+            else
+                return y
+            end
+        end
+    )");
+
+    LUAU_REQUIRE_NO_ERRORS(result);
+
+    CHECK("<a>({a}, a) -> a" == toString(requireType("foo")));
+}
+
+TEST_CASE_FIXTURE(Fixture, "mymovie_read_write_tables_bug")
+{
+    CheckResult result = check(R"(
+        type MockedResponseBody = string | (() -> MockedResponseBody)
+        type MockedResponse = { type: 'body', body: MockedResponseBody } | { type: 'error' }
+
+        local function mockedResponseToHttpResponse(mockedResponse: MockedResponse)
+            assert(mockedResponse.type == 'body', 'Mocked response is not a body')
+            if typeof(mockedResponse.body) == 'string' then
+            else
+                return mockedResponseToHttpResponse(mockedResponse)
+            end
+        end
+    )");
+
+    // we're primarily interested in knowing that this does not crash.
+    LUAU_REQUIRE_ERRORS(result);
+}
+
+TEST_CASE_FIXTURE(Fixture, "mymovie_read_write_tables_bug_2")
+{
+    CheckResult result = check(R"(
+        type MockedResponse = { type: 'body' } | { type: 'error' }
+
+        local function mockedResponseToHttpResponse(mockedResponse: MockedResponse)
+            assert(mockedResponse.type == 'body', 'Mocked response is not a body')
+
+            if typeof(mockedResponse.body) == 'string' then
+            elseif typeof(mockedResponse.body) == 'table' then
+            else
+                return mockedResponseToHttpResponse(mockedResponse)
+            end
+        end
+    )");
+
+    // we're primarily interested in knowing that this does not crash.
+    LUAU_REQUIRE_ERRORS(result);
+}
+
+
 
 TEST_SUITE_END();

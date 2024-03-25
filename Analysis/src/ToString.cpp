@@ -20,7 +20,6 @@
 #include <string>
 
 LUAU_FASTFLAG(DebugLuauDeferredConstraintResolution)
-LUAU_FASTFLAGVARIABLE(LuauToStringPrettifyLocation, false)
 LUAU_FASTFLAGVARIABLE(LuauToStringSimpleCompositeTypesSingleLine, false)
 
 /*
@@ -374,7 +373,7 @@ struct TypeStringifier
             tv->ty);
     }
 
-    void stringify(const std::string& name, const Property& prop)
+    void emitKey(const std::string& name)
     {
         if (isIdentifier(name))
             state.emit(name);
@@ -385,31 +384,46 @@ struct TypeStringifier
             state.emit("\"]");
         }
         state.emit(": ");
+    }
 
-        if (FFlag::DebugLuauReadWriteProperties)
+    void _newStringify(const std::string& name, const Property& prop)
+    {
+        bool comma = false;
+        if (prop.isShared())
         {
-            // We special case the stringification if the property's read and write types are shared.
-            if (prop.isShared())
-                return stringify(*prop.readType());
-
-            // Otherwise emit them separately.
-            if (auto ty = prop.readType())
-            {
-                state.emit("read ");
-                stringify(*ty);
-            }
-
-            if (prop.readType() && prop.writeType())
-                state.emit(" + ");
-
-            if (auto ty = prop.writeType())
-            {
-                state.emit("write ");
-                stringify(*ty);
-            }
-        }
-        else
+            emitKey(name);
             stringify(prop.type());
+            return;
+        }
+
+        if (prop.readTy)
+        {
+            state.emit("read ");
+            emitKey(name);
+            stringify(*prop.readTy);
+            comma = true;
+        }
+        if (prop.writeTy)
+        {
+            if (comma)
+            {
+                state.emit(",");
+                state.newline();
+            }
+
+            state.emit("write ");
+            emitKey(name);
+            stringify(*prop.writeTy);
+        }
+    }
+
+    void stringify(const std::string& name, const Property& prop)
+    {
+        if (FFlag::DebugLuauDeferredConstraintResolution)
+            return _newStringify(name, prop);
+
+        emitKey(name);
+        stringify(prop.type());
     }
 
     void stringify(TypePackId tp);
@@ -1755,12 +1769,16 @@ std::string toString(const Constraint& constraint, ToStringOptions& opts)
         }
         else if constexpr (std::is_same_v<T, HasPropConstraint>)
         {
-            return tos(c.resultType) + " ~ hasProp " + tos(c.subjectType) + ", \"" + c.prop + "\"";
+            return tos(c.resultType) + " ~ hasProp " + tos(c.subjectType) + ", \"" + c.prop + "\" ctx=" + std::to_string(int(c.context));
         }
         else if constexpr (std::is_same_v<T, SetPropConstraint>)
         {
             const std::string pathStr = c.path.size() == 1 ? "\"" + c.path[0] + "\"" : "[\"" + join(c.path, "\", \"") + "\"]";
             return tos(c.resultType) + " ~ setProp " + tos(c.subjectType) + ", " + pathStr + " " + tos(c.propType);
+        }
+        else if constexpr (std::is_same_v<T, HasIndexerConstraint>)
+        {
+            return tos(c.resultType) + " ~ hasIndexer " + tos(c.subjectType) + " " + tos(c.indexType);
         }
         else if constexpr (std::is_same_v<T, SetIndexerConstraint>)
         {
@@ -1801,6 +1819,8 @@ std::string toString(const Constraint& constraint, ToStringOptions& opts)
         {
             return "reduce " + tos(c.tp);
         }
+        else if constexpr (std::is_same_v<T, EqualityConstraint>)
+            return "equality: " + tos(c.resultType) + " ~ " + tos(c.assignmentType);
         else
             static_assert(always_false_v<T>, "Non-exhaustive constraint switch");
     };
@@ -1862,15 +1882,8 @@ std::string toString(const Position& position)
 
 std::string toString(const Location& location, int offset, bool useBegin)
 {
-    if (FFlag::LuauToStringPrettifyLocation)
-    {
-        return "(" + std::to_string(location.begin.line + offset) + ", " + std::to_string(location.begin.column + offset) + ") - (" +
-               std::to_string(location.end.line + offset) + ", " + std::to_string(location.end.column + offset) + ")";
-    }
-    else
-    {
-        return "Location { " + toString(location.begin) + ", " + toString(location.end) + " }";
-    }
+    return "(" + std::to_string(location.begin.line + offset) + ", " + std::to_string(location.begin.column + offset) + ") - (" +
+            std::to_string(location.end.line + offset) + ", " + std::to_string(location.end.column + offset) + ")";
 }
 
 std::string toString(const TypeOrPack& tyOrTp, ToStringOptions& opts)

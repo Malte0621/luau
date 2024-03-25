@@ -38,6 +38,11 @@ struct Unifier2
 
     DenseHashMap<TypeId, std::vector<TypeId>> expandedFreeTypes{nullptr};
 
+    // Mapping from generic types to free types to be used in instantiation.
+    DenseHashMap<TypeId, TypeId> genericSubstitutions{nullptr};
+    // Mapping from generic type packs to `TypePack`s of free types to be used in instantiation.
+    DenseHashMap<TypePackId, TypePackId> genericPackSubstitutions{nullptr};
+
     int recursionCount = 0;
     int recursionLimit = 0;
 
@@ -80,6 +85,10 @@ private:
      * @returns simplify(left & right)
      */
     TypeId mkIntersection(TypeId left, TypeId right);
+
+    // Returns true if needle occurs within haystack already.  ie if we bound
+    // needle to haystack, would a cyclic type result?
+    OccursCheckResult occursCheck(DenseHashSet<TypeId>& seen, TypeId needle, TypeId haystack);
 
     // Returns true if needle occurs within haystack already.  ie if we bound
     // needle to haystack, would a cyclic TypePack result?

@@ -22,12 +22,45 @@ enum class ValueContext
     RValue
 };
 
+/// the current context of the type checker
+enum class TypeContext
+{
+    /// the default context
+    Default,
+    /// inside of a condition
+    Condition,
+};
+
+bool inConditional(const TypeContext& context);
+
+// sets the given type context to `Condition` and restores it to its original
+// value when the struct drops out of scope
+struct InConditionalContext
+{
+    TypeContext* typeContext;
+    TypeContext oldValue;
+
+    InConditionalContext(TypeContext* c)
+        : typeContext(c)
+        , oldValue(*c)
+    {
+        *typeContext = TypeContext::Condition;
+    }
+
+    ~InConditionalContext()
+    {
+        *typeContext = oldValue;
+    }
+};
+
 using ScopePtr = std::shared_ptr<struct Scope>;
 
 std::optional<TypeId> findMetatableEntry(
     NotNull<BuiltinTypes> builtinTypes, ErrorVec& errors, TypeId type, const std::string& entry, Location location);
 std::optional<TypeId> findTablePropertyRespectingMeta(
     NotNull<BuiltinTypes> builtinTypes, ErrorVec& errors, TypeId ty, const std::string& name, Location location);
+std::optional<TypeId> findTablePropertyRespectingMeta(
+    NotNull<BuiltinTypes> builtinTypes, ErrorVec& errors, TypeId ty, const std::string& name, ValueContext context, Location location);
 
 // Returns the minimum and maximum number of types the argument list can accept.
 std::pair<size_t, std::optional<size_t>> getParameterExtents(const TxnLog* log, TypePackId tp, bool includeHiddenVariadics = false);

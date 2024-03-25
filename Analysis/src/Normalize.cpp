@@ -9,6 +9,7 @@
 #include "Luau/Common.h"
 #include "Luau/RecursionCounter.h"
 #include "Luau/Set.h"
+#include "Luau/Simplify.h"
 #include "Luau/Subtyping.h"
 #include "Luau/Type.h"
 #include "Luau/TypeFwd.h"
@@ -20,7 +21,6 @@ LUAU_FASTFLAGVARIABLE(DebugLuauCheckNormalizeInvariant, false)
 LUAU_FASTINTVARIABLE(LuauNormalizeIterationLimit, 1200);
 LUAU_FASTINTVARIABLE(LuauNormalizeCacheLimit, 100000);
 LUAU_FASTFLAG(LuauTransitiveSubtyping)
-LUAU_FASTFLAG(DebugLuauReadWriteProperties)
 LUAU_FASTFLAG(DebugLuauDeferredConstraintResolution)
 
 namespace Luau
@@ -394,6 +394,25 @@ bool NormalizedType::hasTyvars() const
     return !tyvars.empty();
 }
 
+bool NormalizedType::isFalsy() const
+{
+
+    bool hasAFalse = false;
+    if (auto singleton = get<SingletonType>(booleans))
+    {
+        if (auto bs = singleton->variant.get_if<BooleanSingleton>())
+            hasAFalse = !bs->value;
+    }
+
+    return (hasAFalse || hasNils()) && (!hasTops() && !hasClasses() && !hasErrors() && !hasNumbers() && !hasStrings() && !hasThreads() &&
+                                           !hasBuffers() && !hasTables() && !hasFunctions() && !hasTyvars());
+}
+
+bool NormalizedType::isTruthy() const
+{
+    return !isFalsy();
+}
+
 static bool isShallowInhabited(const NormalizedType& norm)
 {
     // This test is just a shallow check, for example it returns `true` for `{ p : never }`
@@ -472,11 +491,11 @@ bool Normalizer::isInhabited(TypeId ty, Set<TypeId>& seen)
     {
         for (const auto& [_, prop] : ttv->props)
         {
-            if (FFlag::DebugLuauReadWriteProperties)
+            if (FFlag::DebugLuauDeferredConstraintResolution)
             {
                 // A table enclosing a read property whose type is uninhabitable is also itself uninhabitable,
                 // but not its write property. That just means the write property doesn't exist, and so is readonly.
-                if (auto ty = prop.readType(); ty && !isInhabited(*ty, seen))
+                if (auto ty = prop.readTy; ty && !isInhabited(*ty, seen))
                     return false;
             }
             else
@@ -2349,12 +2368,61 @@ std::optional<TypeId> Normalizer::intersectionOfTables(TypeId here, TypeId there
         {
             const auto& [_name, tprop] = *tfound;
             // TODO: variance issues here, which can't be fixed until we have read/write property types
-            prop.setType(intersectionType(hprop.type(), tprop.type()));
-            hereSubThere &= (prop.type() == hprop.type());
-            thereSubHere &= (prop.type() == tprop.type());
+            if (FFlag::DebugLuauDeferredConstraintResolution)
+            {
+                if (hprop.readTy.has_value())
+                {
+                    if (tprop.readTy.has_value())
+                    {
+                        TypeId ty = simplifyIntersection(builtinTypes, NotNull{arena}, *hprop.readTy, *tprop.readTy).result;
+                        prop.readTy = ty;
+                        hereSubThere &= (ty == hprop.readTy);
+                        thereSubHere &= (ty == tprop.readTy);
+                    }
+                    else
+                    {
+                        prop.readTy = *hprop.readTy;
+                        thereSubHere = false;
+                    }
+                }
+                else if (tprop.readTy.has_value())
+                {
+                    prop.readTy = *tprop.readTy;
+                    hereSubThere = false;
+                }
+
+                if (hprop.writeTy.has_value())
+                {
+                    if (tprop.writeTy.has_value())
+                    {
+                        prop.writeTy = simplifyIntersection(builtinTypes, NotNull{arena}, *hprop.writeTy, *tprop.writeTy).result;
+                        hereSubThere &= (prop.writeTy == hprop.writeTy);
+                        thereSubHere &= (prop.writeTy == tprop.writeTy);
+                    }
+                    else
+                    {
+                        prop.writeTy = *hprop.writeTy;
+                        thereSubHere = false;
+                    }
+                }
+                else if (tprop.writeTy.has_value())
+                {
+                    prop.writeTy = *tprop.writeTy;
+                    hereSubThere = false;
+                }
+            }
+            else
+            {
+                prop.setType(intersectionType(hprop.type(), tprop.type()));
+                hereSubThere &= (prop.type() == hprop.type());
+                thereSubHere &= (prop.type() == tprop.type());
+            }
         }
+
         // TODO: string indexers
-        result.props[name] = prop;
+
+        if (prop.readTy || prop.writeTy)
+            result.props[name] = prop;
     }
 
     for (const auto& [name, tprop] : tttv->props)
@@ -2431,8 +2499,10 @@ void Normalizer::intersectTablesWithTable(TypeIds& heres, TypeId there)
 {
     TypeIds tmp;
     for (TypeId here : heres)
+    {
         if (std::optional<TypeId> inter = intersectionOfTables(here, there))
             tmp.insert(*inter);
+    }
     heres.retain(tmp);
     heres.insert(tmp.begin(), tmp.end());
 }
@@ -2441,9 +2511,14 @@ void Normalizer::intersectTables(TypeIds& heres, const TypeIds& theres)
 {
     TypeIds tmp;
     for (TypeId here : heres)
+    {
         for (TypeId there : theres)
+        {
             if (std::optional<TypeId> inter = intersectionOfTables(here, there))
                 tmp.insert(*inter);
+        }
+    }
+
     heres.retain(tmp);
     heres.insert(tmp.begin(), tmp.end());
 }
@@ -2893,6 +2968,12 @@ bool Normalizer::intersectNormalWithTy(NormalizedType& here, TypeId there, Set<T
             // assumption that it is the same as any.
             return true;
         }
+        else if (get<NeverType>(t))
+        {
+            // if we're intersecting with `~never`, this is equivalent to intersecting with `unknown`
+            // this is a noop since an intersection with `unknown` is trivial.
+            return true;
+        }
         else if (auto nt = get<NegationType>(t))
             return intersectNormalWithTy(here, nt->ty, seenSetTypes);
         else
@@ -2914,6 +2995,20 @@ bool Normalizer::intersectNormalWithTy(NormalizedType& here, TypeId there, Set<T
     here.tyvars = std::move(tyvars);
 
     return true;
+}
+
+void makeTableShared(TypeId ty)
+{
+    if (auto tableTy = getMutable<TableType>(ty))
+    {
+        for (auto& [_, prop] : tableTy->props)
+            prop.makeShared();
+    }
+    else if (auto metatableTy = get<MetatableType>(ty))
+    {
+        makeTableShared(metatableTy->metatable);
+        makeTableShared(metatableTy->table);
+    }
 }
 
 // -------- Convert back from a normalized type to a type
@@ -3010,7 +3105,18 @@ TypeId Normalizer::typeFromNormal(const NormalizedType& norm)
     if (!get<NeverType>(norm.buffers))
         result.push_back(builtinTypes->bufferType);
 
-    result.insert(result.end(), norm.tables.begin(), norm.tables.end());
+    if (FFlag::DebugLuauDeferredConstraintResolution)
+    {
+        result.reserve(result.size() + norm.tables.size());
+        for (auto table : norm.tables)
+        {
+            makeTableShared(table);
+            result.push_back(table);
+        }
+    }
+    else
+        result.insert(result.end(), norm.tables.begin(), norm.tables.end());
+
     for (auto& [tyvar, intersect] : norm.tyvars)
     {
         if (get<NeverType>(intersect->tops))

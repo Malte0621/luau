@@ -32,9 +32,8 @@ LUAU_FASTINT(LuauTypeInferRecursionLimit)
 LUAU_FASTINT(LuauTarjanChildLimit)
 LUAU_FASTFLAG(LuauInferInNoCheckMode)
 LUAU_FASTFLAGVARIABLE(LuauKnowsTheDataModel3, false)
-LUAU_FASTFLAGVARIABLE(DebugLuauDeferredConstraintResolution, false)
+LUAU_FASTFLAG(DebugLuauDeferredConstraintResolution)
 LUAU_FASTFLAGVARIABLE(DebugLuauLogSolverToJson, false)
-LUAU_FASTFLAGVARIABLE(DebugLuauReadWriteProperties, false)
 LUAU_FASTFLAGVARIABLE(DebugLuauLogSolverToJsonFile, false)
 
 namespace Luau
@@ -1170,6 +1169,8 @@ ModulePtr check(const SourceModule& sourceModule, Mode mode, const std::vector<R
     result->name = sourceModule.name;
     result->humanReadableName = sourceModule.humanReadableName;
 
+    result->mode = sourceModule.mode.value_or(Mode::NoCheck);
+
     result->internalTypes.owningModule = result.get();
     result->interfaceTypes.owningModule = result.get();
 
@@ -1200,7 +1201,7 @@ ModulePtr check(const SourceModule& sourceModule, Mode mode, const std::vector<R
     cg.visitModuleRoot(sourceModule.root);
     result->errors = std::move(cg.errors);
 
-    ConstraintSolver cs{NotNull{&normalizer}, NotNull(cg.rootScope), borrowConstraints(cg.constraints), result->humanReadableName, moduleResolver,
+    ConstraintSolver cs{NotNull{&normalizer}, NotNull(cg.rootScope), borrowConstraints(cg.constraints), result->name, moduleResolver,
         requireCycles, logger.get(), limits};
 
     if (options.randomizeConstraintResolutionSeed)
@@ -1217,6 +1218,15 @@ ModulePtr check(const SourceModule& sourceModule, Mode mode, const std::vector<R
     catch (const UserCancelError&)
     {
         result->cancelled = true;
+    }
+
+    if (recordJsonLog)
+    {
+        std::string output = logger->compileOutput();
+        if (FFlag::DebugLuauLogSolverToJsonFile && writeJsonLog)
+            writeJsonLog(sourceModule.name, std::move(output));
+        else
+            printf("%s\n", output.c_str());
     }
 
     for (TypeError& e : cs.errors)
@@ -1263,15 +1273,6 @@ ModulePtr check(const SourceModule& sourceModule, Mode mode, const std::vector<R
     freeze(result->internalTypes);
     freeze(result->interfaceTypes);
 
-    if (recordJsonLog)
-    {
-        std::string output = logger->compileOutput();
-        if (FFlag::DebugLuauLogSolverToJsonFile && writeJsonLog)
-            writeJsonLog(sourceModule.name, std::move(output));
-        else
-            printf("%s\n", output.c_str());
-    }
-
     return result;
 }
 
@@ -1295,8 +1296,8 @@ ModulePtr Frontend::check(const SourceModule& sourceModule, Mode mode, std::vect
         catch (const InternalCompilerError& err)
         {
             InternalCompilerError augmented = err.location.has_value()
-                                                  ? InternalCompilerError{err.message, sourceModule.humanReadableName, *err.location}
-                                                  : InternalCompilerError{err.message, sourceModule.humanReadableName};
+                                                  ? InternalCompilerError{err.message, sourceModule.name, *err.location}
+                                                  : InternalCompilerError{err.message, sourceModule.name};
             throw augmented;
         }
     }

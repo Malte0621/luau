@@ -8,6 +8,7 @@
 #include "Luau/Type.h"
 #include "Luau/TypeArena.h"
 #include "Luau/TypeCheckLimits.h"
+#include "Luau/TypeFamily.h"
 #include "Luau/TypeUtils.h"
 #include "Luau/VisitType.h"
 
@@ -18,6 +19,59 @@ LUAU_FASTINT(LuauTypeInferRecursionLimit)
 
 namespace Luau
 {
+
+static bool areCompatible(TypeId left, TypeId right)
+{
+    auto p = get2<TableType, TableType>(follow(left), follow(right));
+    if (!p)
+        return true;
+
+    const TableType* leftTable = p.first;
+    LUAU_ASSERT(leftTable);
+    const TableType* rightTable = p.second;
+    LUAU_ASSERT(rightTable);
+
+    const auto missingPropIsCompatible = [](const Property& leftProp, const TableType* rightTable) {
+        // Two tables may be compatible even if their shapes aren't exactly the
+        // same if the extra property is optional, free (and therefore
+        // potentially optional), or if the right table has an indexer.  Or if
+        // the right table is free (and therefore potentially has an indexer or
+        // a compatible property)
+
+        LUAU_ASSERT(leftProp.isReadOnly() || leftProp.isShared());
+
+        const TypeId leftType = follow(
+            leftProp.isReadOnly() ? *leftProp.readTy : leftProp.type()
+        );
+
+        if (isOptional(leftType) || get<FreeType>(leftType) || rightTable->state == TableState::Free || rightTable->indexer.has_value())
+            return true;
+
+        return false;
+    };
+
+    for (const auto& [name, leftProp]: leftTable->props)
+    {
+        auto it = rightTable->props.find(name);
+        if (it == rightTable->props.end())
+        {
+            if (!missingPropIsCompatible(leftProp, rightTable))
+                return false;
+        }
+    }
+
+    for (const auto& [name, rightProp]: rightTable->props)
+    {
+        auto it = leftTable->props.find(name);
+        if (it == leftTable->props.end())
+        {
+            if (!missingPropIsCompatible(rightProp, leftTable))
+                return false;
+        }
+    }
+
+    return true;
+}
 
 Unifier2::Unifier2(NotNull<TypeArena> arena, NotNull<BuiltinTypes> builtinTypes, NotNull<Scope> scope, NotNull<InternalErrorReporter> ice)
     : arena(arena)
@@ -34,6 +88,12 @@ bool Unifier2::unify(TypeId subTy, TypeId superTy)
     subTy = follow(subTy);
     superTy = follow(superTy);
 
+    if (auto subGen = genericSubstitutions.find(subTy))
+        return unify(*subGen, superTy);
+
+    if (auto superGen = genericSubstitutions.find(superTy))
+        return unify(subTy, *superGen);
+
     if (seenTypePairings.contains({subTy, superTy}))
         return true;
     seenTypePairings.insert({subTy, superTy});
@@ -44,14 +104,33 @@ bool Unifier2::unify(TypeId subTy, TypeId superTy)
     FreeType* subFree = getMutable<FreeType>(subTy);
     FreeType* superFree = getMutable<FreeType>(superTy);
 
-    if (subFree)
+    if (subFree && superFree)
+    {
+        DenseHashSet<TypeId> seen{nullptr};
+        if (OccursCheckResult::Fail == occursCheck(seen, subTy, superTy))
+        {
+            asMutable(subTy)->ty.emplace<BoundType>(builtinTypes->errorRecoveryType());
+            return false;
+        }
+        else if (OccursCheckResult::Fail == occursCheck(seen, superTy, subTy))
+        {
+            asMutable(subTy)->ty.emplace<BoundType>(builtinTypes->errorRecoveryType());
+            return false;
+        }
+
+        superFree->lowerBound = mkUnion(subFree->lowerBound, superFree->lowerBound);
+        superFree->upperBound = mkIntersection(subFree->upperBound, superFree->upperBound);
+        asMutable(subTy)->ty.emplace<BoundType>(superTy);
+    }
+    else if (subFree)
     {
         subFree->upperBound = mkIntersection(subFree->upperBound, superTy);
         expandedFreeTypes[subTy].push_back(superTy);
     }
-
-    if (superFree)
+    else if (superFree)
+    {
         superFree->lowerBound = mkUnion(superFree->lowerBound, subTy);
+    }
 
     if (subFree || superFree)
         return true;
@@ -159,13 +238,11 @@ bool Unifier2::unify(TypeId subTy, const FunctionType* superFn)
 
     if (shouldInstantiate)
     {
-        std::optional<TypeId> instantiated = instantiate(builtinTypes, arena, NotNull{&limits}, scope, subTy);
-        if (!instantiated)
-            return false;
+        for (auto generic : subFn->generics)
+            genericSubstitutions[generic] = freshType(arena, builtinTypes, scope);
 
-        subFn = get<FunctionType>(*instantiated);
-
-        LUAU_ASSERT(subFn); // instantiation should not make a function type _not_ a function type.
+        for (auto genericPack : subFn->genericPacks)
+            genericPackSubstitutions[genericPack] = arena->freshTypePack(scope);
     }
 
     bool argResult = unify(superFn->argTypes, subFn->argTypes);
@@ -179,7 +256,10 @@ bool Unifier2::unify(const UnionType* subUnion, TypeId superTy)
 
     // if the occurs check fails for any option, it fails overall
     for (auto subOption : subUnion->options)
-        result &= unify(subOption, superTy);
+    {
+        if (areCompatible(subOption, superTy))
+            result &= unify(subOption, superTy);
+    }
 
     return result;
 }
@@ -190,7 +270,10 @@ bool Unifier2::unify(TypeId subTy, const UnionType* superUnion)
 
     // if the occurs check fails for any option, it fails overall
     for (auto superOption : superUnion->options)
-        result &= unify(subTy, superOption);
+    {
+        if (areCompatible(subTy, superOption))
+            result &= unify(subTy, superOption);
+    }
 
     return result;
 }
@@ -228,7 +311,21 @@ bool Unifier2::unify(TableType* subTable, const TableType* superTable)
         auto superPropOpt = superTable->props.find(propName);
 
         if (superPropOpt != superTable->props.end())
-            result &= unify(subProp.type(), superPropOpt->second.type());
+        {
+            const Property& superProp = superPropOpt->second;
+
+            if (subProp.isReadOnly() && superProp.isReadOnly())
+                result &= unify(*subProp.readTy, *superPropOpt->second.readTy);
+            else if (subProp.isReadOnly())
+                result &= unify(*subProp.readTy, superProp.type());
+            else if (superProp.isReadOnly())
+                result &= unify(subProp.type(), *superProp.readTy);
+            else
+            {
+                result &= unify(subProp.type(), superProp.type());
+                result &= unify(superProp.type(), subProp.type());
+            }
+        }
     }
 
     auto subTypeParamsIter = subTable->instantiatedTypeParams.begin();
@@ -293,9 +390,18 @@ bool Unifier2::unify(TypePackId subTp, TypePackId superTp)
     subTp = follow(subTp);
     superTp = follow(superTp);
 
+    if (auto subGen = genericPackSubstitutions.find(subTp))
+        return unify(*subGen, superTp);
+
+    if (auto superGen = genericPackSubstitutions.find(superTp))
+        return unify(subTp, *superGen);
+
     if (seenTypePackPairings.contains({subTp, superTp}))
         return true;
     seenTypePackPairings.insert({subTp, superTp});
+
+    if (subTp == superTp)
+        return true;
 
     const FreeTypePack* subFree = get<FreeTypePack>(subTp);
     const FreeTypePack* superFree = get<FreeTypePack>(superTp);
@@ -378,11 +484,14 @@ struct FreeTypeSearcher : TypeVisitor
     {
     }
 
-    enum
+    enum Polarity
     {
         Positive,
-        Negative
-    } polarity = Positive;
+        Negative,
+        Both,
+    };
+
+    Polarity polarity = Positive;
 
     void flip()
     {
@@ -393,6 +502,8 @@ struct FreeTypeSearcher : TypeVisitor
             break;
         case Negative:
             polarity = Positive;
+            break;
+        case Both:
             break;
         }
     }
@@ -419,6 +530,10 @@ struct FreeTypeSearcher : TypeVisitor
         case Negative:
             negativeTypes[ty]++;
             break;
+        case Both:
+            positiveTypes[ty]++;
+            negativeTypes[ty]++;
+            break;
         }
 
         return true;
@@ -436,10 +551,35 @@ struct FreeTypeSearcher : TypeVisitor
             case Negative:
                 negativeTypes[ty]++;
                 break;
+            case Both:
+                positiveTypes[ty]++;
+                negativeTypes[ty]++;
+                break;
             }
         }
 
-        return true;
+        for (const auto& [_name, prop] : tt.props)
+        {
+            if (prop.isReadOnly())
+                traverse(*prop.readTy);
+            else
+            {
+                LUAU_ASSERT(prop.isShared());
+
+                Polarity p = polarity;
+                polarity = Both;
+                traverse(prop.type());
+                polarity = p;
+            }
+        }
+
+        if (tt.indexer)
+        {
+            traverse(tt.indexer->indexType);
+            traverse(tt.indexer->indexResultType);
+        }
+
+        return false;
     }
 
     bool visit(TypeId ty, const FunctionType& ft) override
@@ -450,6 +590,11 @@ struct FreeTypeSearcher : TypeVisitor
 
         traverse(ft.retTypes);
 
+        return false;
+    }
+
+    bool visit(TypeId, const ClassType&) override
+    {
         return false;
     }
 };
@@ -538,8 +683,8 @@ struct MutatingGeneralizer : TypeOnceVisitor
         if (!ft)
             return false;
 
-        const bool positiveCount = getCount(positiveTypes, ty);
-        const bool negativeCount = getCount(negativeTypes, ty);
+        const size_t positiveCount = getCount(positiveTypes, ty);
+        const size_t negativeCount = getCount(negativeTypes, ty);
 
         if (!positiveCount && !negativeCount)
             return false;
@@ -686,6 +831,53 @@ TypeId Unifier2::mkIntersection(TypeId left, TypeId right)
     right = follow(right);
 
     return simplifyIntersection(builtinTypes, arena, left, right).result;
+}
+
+OccursCheckResult Unifier2::occursCheck(DenseHashSet<TypeId>& seen, TypeId needle, TypeId haystack)
+{
+    RecursionLimiter _ra(&recursionCount, recursionLimit);
+
+    OccursCheckResult occurrence = OccursCheckResult::Pass;
+
+    auto check = [&](TypeId ty) {
+        if (occursCheck(seen, needle, ty) == OccursCheckResult::Fail)
+            occurrence = OccursCheckResult::Fail;
+    };
+
+    needle = follow(needle);
+    haystack = follow(haystack);
+
+    if (seen.find(haystack))
+        return OccursCheckResult::Pass;
+
+    seen.insert(haystack);
+
+    if (get<ErrorType>(needle))
+        return OccursCheckResult::Pass;
+
+    if (!get<FreeType>(needle))
+        ice->ice("Expected needle to be free");
+
+    if (needle == haystack)
+        return OccursCheckResult::Fail;
+
+    if (auto haystackFree = get<FreeType>(haystack))
+    {
+        check(haystackFree->lowerBound);
+        check(haystackFree->upperBound);
+    }
+    else if (auto ut = get<UnionType>(haystack))
+    {
+        for (TypeId ty : ut->options)
+            check(ty);
+    }
+    else if (auto it = get<IntersectionType>(haystack))
+    {
+        for (TypeId ty : it->parts)
+            check(ty);
+    }
+
+    return occurrence;
 }
 
 OccursCheckResult Unifier2::occursCheck(DenseHashSet<TypePackId>& seen, TypePackId needle, TypePackId haystack)

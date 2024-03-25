@@ -11,8 +11,11 @@
 #include "lstate.h"
 #include "lgc.h"
 
-LUAU_DYNAMIC_FASTFLAGVARIABLE(LuauCodeGenFixBufferLenCheckA64, false)
 LUAU_FASTFLAGVARIABLE(LuauCodeGenVectorA64, false)
+LUAU_FASTFLAGVARIABLE(LuauCodeGenOptVecA64, false)
+
+LUAU_FASTFLAG(LuauCodegenVectorTag2)
+LUAU_FASTFLAG(LuauCodegenRemoveDeadStores4)
 
 namespace Luau
 {
@@ -200,25 +203,71 @@ static bool emitBuiltin(
     switch (bfid)
     {
     case LBF_MATH_FREXP:
-        CODEGEN_ASSERT(nparams == 1 && (nresults == 1 || nresults == 2));
-        emitInvokeLibm1P(build, offsetof(NativeContext, libm_frexp), arg);
-        build.str(d0, mem(rBase, res * sizeof(TValue) + offsetof(TValue, value.n)));
-        if (nresults == 2)
+    {
+        if (FFlag::LuauCodegenRemoveDeadStores4)
         {
-            build.ldr(w0, sTemporary);
-            build.scvtf(d1, w0);
-            build.str(d1, mem(rBase, (res + 1) * sizeof(TValue) + offsetof(TValue, value.n)));
+            CODEGEN_ASSERT(nparams == 1 && (nresults == 1 || nresults == 2));
+            emitInvokeLibm1P(build, offsetof(NativeContext, libm_frexp), arg);
+            build.str(d0, mem(rBase, res * sizeof(TValue) + offsetof(TValue, value.n)));
+
+            RegisterA64 temp = regs.allocTemp(KindA64::w);
+            build.mov(temp, LUA_TNUMBER);
+            build.str(temp, mem(rBase, res * sizeof(TValue) + offsetof(TValue, tt)));
+
+            if (nresults == 2)
+            {
+                build.ldr(w0, sTemporary);
+                build.scvtf(d1, w0);
+                build.str(d1, mem(rBase, (res + 1) * sizeof(TValue) + offsetof(TValue, value.n)));
+                build.str(temp, mem(rBase, (res + 1) * sizeof(TValue) + offsetof(TValue, tt)));
+            }
+        }
+        else
+        {
+            CODEGEN_ASSERT(nparams == 1 && (nresults == 1 || nresults == 2));
+            emitInvokeLibm1P(build, offsetof(NativeContext, libm_frexp), arg);
+            build.str(d0, mem(rBase, res * sizeof(TValue) + offsetof(TValue, value.n)));
+            if (nresults == 2)
+            {
+                build.ldr(w0, sTemporary);
+                build.scvtf(d1, w0);
+                build.str(d1, mem(rBase, (res + 1) * sizeof(TValue) + offsetof(TValue, value.n)));
+            }
         }
         return true;
+    }
     case LBF_MATH_MODF:
-        CODEGEN_ASSERT(nparams == 1 && (nresults == 1 || nresults == 2));
-        emitInvokeLibm1P(build, offsetof(NativeContext, libm_modf), arg);
-        build.ldr(d1, sTemporary);
-        build.str(d1, mem(rBase, res * sizeof(TValue) + offsetof(TValue, value.n)));
-        if (nresults == 2)
-            build.str(d0, mem(rBase, (res + 1) * sizeof(TValue) + offsetof(TValue, value.n)));
+    {
+        if (FFlag::LuauCodegenRemoveDeadStores4)
+        {
+            CODEGEN_ASSERT(nparams == 1 && (nresults == 1 || nresults == 2));
+            emitInvokeLibm1P(build, offsetof(NativeContext, libm_modf), arg);
+            build.ldr(d1, sTemporary);
+            build.str(d1, mem(rBase, res * sizeof(TValue) + offsetof(TValue, value.n)));
+
+            RegisterA64 temp = regs.allocTemp(KindA64::w);
+            build.mov(temp, LUA_TNUMBER);
+            build.str(temp, mem(rBase, res * sizeof(TValue) + offsetof(TValue, tt)));
+
+            if (nresults == 2)
+            {
+                build.str(d0, mem(rBase, (res + 1) * sizeof(TValue) + offsetof(TValue, value.n)));
+                build.str(temp, mem(rBase, (res + 1) * sizeof(TValue) + offsetof(TValue, tt)));
+            }
+        }
+        else
+        {
+            CODEGEN_ASSERT(nparams == 1 && (nresults == 1 || nresults == 2));
+            emitInvokeLibm1P(build, offsetof(NativeContext, libm_modf), arg);
+            build.ldr(d1, sTemporary);
+            build.str(d1, mem(rBase, res * sizeof(TValue) + offsetof(TValue, value.n)));
+            if (nresults == 2)
+                build.str(d0, mem(rBase, (res + 1) * sizeof(TValue) + offsetof(TValue, value.n)));
+        }
         return true;
+    }
     case LBF_MATH_SIGN:
+    {
         CODEGEN_ASSERT(nparams == 1 && nresults == 1);
         build.ldr(d0, mem(rBase, arg * sizeof(TValue) + offsetof(TValue, value.n)));
         build.fcmpz(d0);
@@ -228,7 +277,15 @@ static bool emitBuiltin(
         build.fmov(d1, -1.0);
         build.fcsel(d0, d1, d0, getConditionFP(IrCondition::Less));
         build.str(d0, mem(rBase, res * sizeof(TValue) + offsetof(TValue, value.n)));
+
+        if (FFlag::LuauCodegenRemoveDeadStores4)
+        {
+            RegisterA64 temp = regs.allocTemp(KindA64::w);
+            build.mov(temp, LUA_TNUMBER);
+            build.str(temp, mem(rBase, res * sizeof(TValue) + offsetof(TValue, tt)));
+        }
         return true;
+    }
 
     default:
         CODEGEN_ASSERT(!"Missing A64 lowering");
@@ -678,9 +735,12 @@ void IrLoweringA64::lowerInst(IrInst& inst, uint32_t index, const IrBlock& next)
         {
             build.fadd(inst.regA64, regOp(inst.a), regOp(inst.b));
 
-            RegisterA64 tempw = regs.allocTemp(KindA64::w);
-            build.mov(tempw, LUA_TVECTOR);
-            build.ins_4s(inst.regA64, tempw, 3);
+            if (!FFlag::LuauCodegenVectorTag2)
+            {
+                RegisterA64 tempw = regs.allocTemp(KindA64::w);
+                build.mov(tempw, LUA_TVECTOR);
+                build.ins_4s(inst.regA64, tempw, 3);
+            }
         }
         else
         {
@@ -705,9 +765,12 @@ void IrLoweringA64::lowerInst(IrInst& inst, uint32_t index, const IrBlock& next)
         {
             build.fsub(inst.regA64, regOp(inst.a), regOp(inst.b));
 
-            RegisterA64 tempw = regs.allocTemp(KindA64::w);
-            build.mov(tempw, LUA_TVECTOR);
-            build.ins_4s(inst.regA64, tempw, 3);
+            if (!FFlag::LuauCodegenVectorTag2)
+            {
+                RegisterA64 tempw = regs.allocTemp(KindA64::w);
+                build.mov(tempw, LUA_TVECTOR);
+                build.ins_4s(inst.regA64, tempw, 3);
+            }
         }
         else
         {
@@ -732,9 +795,12 @@ void IrLoweringA64::lowerInst(IrInst& inst, uint32_t index, const IrBlock& next)
         {
             build.fmul(inst.regA64, regOp(inst.a), regOp(inst.b));
 
-            RegisterA64 tempw = regs.allocTemp(KindA64::w);
-            build.mov(tempw, LUA_TVECTOR);
-            build.ins_4s(inst.regA64, tempw, 3);
+            if (!FFlag::LuauCodegenVectorTag2)
+            {
+                RegisterA64 tempw = regs.allocTemp(KindA64::w);
+                build.mov(tempw, LUA_TVECTOR);
+                build.ins_4s(inst.regA64, tempw, 3);
+            }
         }
         else
         {
@@ -759,9 +825,12 @@ void IrLoweringA64::lowerInst(IrInst& inst, uint32_t index, const IrBlock& next)
         {
             build.fdiv(inst.regA64, regOp(inst.a), regOp(inst.b));
 
-            RegisterA64 tempw = regs.allocTemp(KindA64::w);
-            build.mov(tempw, LUA_TVECTOR);
-            build.ins_4s(inst.regA64, tempw, 3);
+            if (!FFlag::LuauCodegenVectorTag2)
+            {
+                RegisterA64 tempw = regs.allocTemp(KindA64::w);
+                build.mov(tempw, LUA_TVECTOR);
+                build.ins_4s(inst.regA64, tempw, 3);
+            }
         }
         else
         {
@@ -786,9 +855,12 @@ void IrLoweringA64::lowerInst(IrInst& inst, uint32_t index, const IrBlock& next)
         {
             build.fneg(inst.regA64, regOp(inst.a));
 
-            RegisterA64 tempw = regs.allocTemp(KindA64::w);
-            build.mov(tempw, LUA_TVECTOR);
-            build.ins_4s(inst.regA64, tempw, 3);
+            if (!FFlag::LuauCodegenVectorTag2)
+            {
+                RegisterA64 tempw = regs.allocTemp(KindA64::w);
+                build.mov(tempw, LUA_TVECTOR);
+                build.ins_4s(inst.regA64, tempw, 3);
+            }
         }
         else
         {
@@ -1156,16 +1228,56 @@ void IrLoweringA64::lowerInst(IrInst& inst, uint32_t index, const IrBlock& next)
         build.fcvtzs(castReg(KindA64::x, inst.regA64), temp);
         break;
     }
-    case IrCmd::NUM_TO_VECTOR:
+    case IrCmd::NUM_TO_VEC:
     {
         inst.regA64 = regs.allocReg(KindA64::q, index);
 
-        RegisterA64 tempd = tempDouble(inst.a);
-        RegisterA64 temps = castReg(KindA64::s, tempd);
+        if (FFlag::LuauCodeGenOptVecA64 && FFlag::LuauCodegenVectorTag2 && inst.a.kind == IrOpKind::Constant)
+        {
+            float value = float(doubleOp(inst.a));
+            uint32_t asU32;
+            static_assert(sizeof(asU32) == sizeof(value), "Expecting float to be 32-bit");
+            memcpy(&asU32, &value, sizeof(value));
+
+            if (AssemblyBuilderA64::isFmovSupported(value))
+            {
+                build.fmov(inst.regA64, value);
+            }
+            else
+            {
+                RegisterA64 temp = regs.allocTemp(KindA64::x);
+
+                uint32_t vec[4] = {asU32, asU32, asU32, 0};
+                build.adr(temp, vec, sizeof(vec));
+                build.ldr(inst.regA64, temp);
+            }
+        }
+        else
+        {
+            RegisterA64 tempd = tempDouble(inst.a);
+            RegisterA64 temps = castReg(KindA64::s, tempd);
+            RegisterA64 tempw = regs.allocTemp(KindA64::w);
+
+            build.fcvt(temps, tempd);
+            build.dup_4s(inst.regA64, castReg(KindA64::q, temps), 0);
+
+            if (!FFlag::LuauCodegenVectorTag2)
+            {
+                build.mov(tempw, LUA_TVECTOR);
+                build.ins_4s(inst.regA64, tempw, 3);
+            }
+        }
+        break;
+    }
+    case IrCmd::TAG_VECTOR:
+    {
+        inst.regA64 = regs.allocReuse(KindA64::q, index, {inst.a});
+
+        RegisterA64 reg = regOp(inst.a);
         RegisterA64 tempw = regs.allocTemp(KindA64::w);
 
-        build.fcvt(temps, tempd);
-        build.dup_4s(inst.regA64, castReg(KindA64::q, temps), 0);
+        if (inst.regA64 != reg)
+            build.mov(inst.regA64, reg);
 
         build.mov(tempw, LUA_TVECTOR);
         build.ins_4s(inst.regA64, tempw, 3);
@@ -1400,20 +1512,35 @@ void IrLoweringA64::lowerInst(IrInst& inst, uint32_t index, const IrBlock& next)
         Label fresh; // used when guard aborts execution or jumps to a VM exit
         Label& fail = getTargetLabel(inst.c, fresh);
 
-        // To support DebugLuauAbortingChecks, CHECK_TAG with VmReg has to be handled
-        RegisterA64 tag = inst.a.kind == IrOpKind::VmReg ? regs.allocTemp(KindA64::w) : regOp(inst.a);
-
-        if (inst.a.kind == IrOpKind::VmReg)
-            build.ldr(tag, mem(rBase, vmRegOp(inst.a) * sizeof(TValue) + offsetof(TValue, tt)));
-
-        if (tagOp(inst.b) == 0)
+        if (FFlag::LuauCodegenRemoveDeadStores4)
         {
-            build.cbnz(tag, fail);
+            if (tagOp(inst.b) == 0)
+            {
+                build.cbnz(regOp(inst.a), fail);
+            }
+            else
+            {
+                build.cmp(regOp(inst.a), tagOp(inst.b));
+                build.b(ConditionA64::NotEqual, fail);
+            }
         }
         else
         {
-            build.cmp(tag, tagOp(inst.b));
-            build.b(ConditionA64::NotEqual, fail);
+            // To support DebugLuauAbortingChecks, CHECK_TAG with VmReg has to be handled
+            RegisterA64 tag = inst.a.kind == IrOpKind::VmReg ? regs.allocTemp(KindA64::w) : regOp(inst.a);
+
+            if (inst.a.kind == IrOpKind::VmReg)
+                build.ldr(tag, mem(rBase, vmRegOp(inst.a) * sizeof(TValue) + offsetof(TValue, tt)));
+
+            if (tagOp(inst.b) == 0)
+            {
+                build.cbnz(tag, fail);
+            }
+            else
+            {
+                build.cmp(tag, tagOp(inst.b));
+                build.b(ConditionA64::NotEqual, fail);
+            }
         }
 
         finalizeTargetLabel(inst.c, fresh);
@@ -1595,11 +1722,7 @@ void IrLoweringA64::lowerInst(IrInst& inst, uint32_t index, const IrBlock& next)
                 RegisterA64 tempx = castReg(KindA64::x, temp);
                 build.sub(tempx, tempx, regOp(inst.b)); // implicit uxtw
                 build.cmp(tempx, uint16_t(accessSize));
-
-                if (DFFlag::LuauCodeGenFixBufferLenCheckA64)
-                    build.b(ConditionA64::Less, target); // note: this is a signed 64-bit comparison so that out of bounds offset fails
-                else
-                    build.b(ConditionA64::LessEqual, target); // note: this is a signed 64-bit comparison so that out of bounds offset fails
+                build.b(ConditionA64::Less, target); // note: this is a signed 64-bit comparison so that out of bounds offset fails
             }
         }
         else if (inst.b.kind == IrOpKind::Constant)

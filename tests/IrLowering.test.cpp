@@ -12,8 +12,9 @@
 
 #include <memory>
 
-LUAU_FASTFLAG(LuauCodegenVector)
-LUAU_FASTFLAG(LuauCodegenMathMemArgs)
+LUAU_FASTFLAG(LuauCodegenVectorTag2)
+LUAU_FASTFLAG(LuauCodegenRemoveDeadStores4)
+LUAU_FASTFLAG(LuauCodegenLoadTVTag)
 
 static std::string getCodegenAssembly(const char* source)
 {
@@ -64,7 +65,7 @@ TEST_SUITE_BEGIN("IrLowering");
 
 TEST_CASE("VectorReciprocal")
 {
-    ScopedFastFlag luauCodegenVector{FFlag::LuauCodegenVector, true};
+    ScopedFastFlag luauCodegenVectorTag2{FFlag::LuauCodegenVectorTag2, true};
 
     CHECK_EQ("\n" + getCodegenAssembly(R"(
 local function vecrcp(a: vector)
@@ -79,10 +80,11 @@ bb_0:
 bb_2:
   JUMP bb_bytecode_1
 bb_bytecode_1:
-  %6 = NUM_TO_VECTOR 1
+  %6 = NUM_TO_VEC 1
   %7 = LOAD_TVALUE R0
   %8 = DIV_VEC %6, %7
-  STORE_TVALUE R1, %8
+  %9 = TAG_VECTOR %8
+  STORE_TVALUE R1, %9
   INTERRUPT 1u
   RETURN R1, 1i
 )");
@@ -90,7 +92,7 @@ bb_bytecode_1:
 
 TEST_CASE("VectorComponentRead")
 {
-    ScopedFastFlag luauCodegenVector{FFlag::LuauCodegenVector, true};
+    ScopedFastFlag luauCodegenRemoveDeadStores{FFlag::LuauCodegenRemoveDeadStores4, true};
 
     CHECK_EQ("\n" + getCodegenAssembly(R"(
 local function compsum(a: vector)
@@ -106,16 +108,9 @@ bb_2:
   JUMP bb_bytecode_1
 bb_bytecode_1:
   %6 = LOAD_FLOAT R0, 0i
-  STORE_DOUBLE R3, %6
-  STORE_TAG R3, tnumber
   %11 = LOAD_FLOAT R0, 4i
-  STORE_DOUBLE R4, %11
-  STORE_TAG R4, tnumber
   %20 = ADD_NUM %6, %11
-  STORE_DOUBLE R2, %20
-  STORE_TAG R2, tnumber
   %25 = LOAD_FLOAT R0, 8i
-  STORE_DOUBLE R3, %25
   %34 = ADD_NUM %20, %25
   STORE_DOUBLE R1, %34
   STORE_TAG R1, tnumber
@@ -126,7 +121,7 @@ bb_bytecode_1:
 
 TEST_CASE("VectorAdd")
 {
-    ScopedFastFlag luauCodegenVector{FFlag::LuauCodegenVector, true};
+    ScopedFastFlag luauCodegenVectorTag2{FFlag::LuauCodegenVectorTag2, true};
 
     CHECK_EQ("\n" + getCodegenAssembly(R"(
 local function vec3add(a: vector, b: vector)
@@ -145,7 +140,8 @@ bb_bytecode_1:
   %10 = LOAD_TVALUE R0
   %11 = LOAD_TVALUE R1
   %12 = ADD_VEC %10, %11
-  STORE_TVALUE R2, %12
+  %13 = TAG_VECTOR %12
+  STORE_TVALUE R2, %13
   INTERRUPT 1u
   RETURN R2, 1i
 )");
@@ -153,7 +149,7 @@ bb_bytecode_1:
 
 TEST_CASE("VectorMinus")
 {
-    ScopedFastFlag luauCodegenVector{FFlag::LuauCodegenVector, true};
+    ScopedFastFlag luauCodegenVectorTag2{FFlag::LuauCodegenVectorTag2, true};
 
     CHECK_EQ("\n" + getCodegenAssembly(R"(
 local function vec3minus(a: vector)
@@ -170,7 +166,8 @@ bb_2:
 bb_bytecode_1:
   %6 = LOAD_TVALUE R0
   %7 = UNM_VEC %6
-  STORE_TVALUE R1, %7
+  %8 = TAG_VECTOR %7
+  STORE_TVALUE R1, %8
   INTERRUPT 1u
   RETURN R1, 1i
 )");
@@ -178,7 +175,8 @@ bb_bytecode_1:
 
 TEST_CASE("VectorSubMulDiv")
 {
-    ScopedFastFlag luauCodegenVector{FFlag::LuauCodegenVector, true};
+    ScopedFastFlag luauCodegenVectorTag2{FFlag::LuauCodegenVectorTag2, true};
+    ScopedFastFlag luauCodegenRemoveDeadStores{FFlag::LuauCodegenRemoveDeadStores4, true};
 
     CHECK_EQ("\n" + getCodegenAssembly(R"(
 local function vec3combo(a: vector, b: vector, c: vector, d: vector)
@@ -199,21 +197,52 @@ bb_bytecode_1:
   %14 = LOAD_TVALUE R0
   %15 = LOAD_TVALUE R1
   %16 = MUL_VEC %14, %15
-  STORE_TVALUE R5, %16
-  %22 = LOAD_TVALUE R2
-  %23 = LOAD_TVALUE R3
-  %24 = DIV_VEC %22, %23
-  STORE_TVALUE R6, %24
-  %32 = SUB_VEC %16, %24
-  STORE_TVALUE R4, %32
+  %23 = LOAD_TVALUE R2
+  %24 = LOAD_TVALUE R3
+  %25 = DIV_VEC %23, %24
+  %34 = SUB_VEC %16, %25
+  %35 = TAG_VECTOR %34
+  STORE_TVALUE R4, %35
   INTERRUPT 3u
   RETURN R4, 1i
 )");
 }
 
+TEST_CASE("VectorSubMulDiv2")
+{
+    ScopedFastFlag luauCodegenVectorTag2{FFlag::LuauCodegenVectorTag2, true};
+    ScopedFastFlag luauCodegenRemoveDeadStores{FFlag::LuauCodegenRemoveDeadStores4, true};
+
+    CHECK_EQ("\n" + getCodegenAssembly(R"(
+local function vec3combo(a: vector)
+    local tmp = a * a
+    return (tmp - tmp) / (tmp + tmp)
+end
+)"),
+        R"(
+; function vec3combo($arg0) line 2
+bb_0:
+  CHECK_TAG R0, tvector, exit(entry)
+  JUMP bb_2
+bb_2:
+  JUMP bb_bytecode_1
+bb_bytecode_1:
+  %8 = LOAD_TVALUE R0
+  %10 = MUL_VEC %8, %8
+  %19 = SUB_VEC %10, %10
+  %28 = ADD_VEC %10, %10
+  %37 = DIV_VEC %19, %28
+  %38 = TAG_VECTOR %37
+  STORE_TVALUE R2, %38
+  INTERRUPT 4u
+  RETURN R2, 1i
+)");
+}
+
 TEST_CASE("VectorMulDivMixed")
 {
-    ScopedFastFlag luauCodegenVector{FFlag::LuauCodegenVector, true};
+    ScopedFastFlag luauCodegenVectorTag2{FFlag::LuauCodegenVectorTag2, true};
+    ScopedFastFlag luauCodegenRemoveDeadStores{FFlag::LuauCodegenRemoveDeadStores4, true};
 
     CHECK_EQ("\n" + getCodegenAssembly(R"(
 local function vec3combo(a: vector, b: vector, c: vector, d: vector)
@@ -232,29 +261,22 @@ bb_2:
   JUMP bb_bytecode_1
 bb_bytecode_1:
   %12 = LOAD_TVALUE R0
-  %13 = NUM_TO_VECTOR 2
+  %13 = NUM_TO_VEC 2
   %14 = MUL_VEC %12, %13
-  STORE_TVALUE R7, %14
-  %18 = LOAD_TVALUE R1
-  %19 = NUM_TO_VECTOR 4
-  %20 = DIV_VEC %18, %19
-  STORE_TVALUE R8, %20
-  %28 = ADD_VEC %14, %20
-  STORE_TVALUE R6, %28
-  STORE_DOUBLE R8, 0.5
-  STORE_TAG R8, tnumber
-  %37 = NUM_TO_VECTOR 0.5
-  %38 = LOAD_TVALUE R2
-  %39 = MUL_VEC %37, %38
-  STORE_TVALUE R7, %39
-  %47 = ADD_VEC %28, %39
-  STORE_TVALUE R5, %47
-  %51 = NUM_TO_VECTOR 40
-  %52 = LOAD_TVALUE R3
-  %53 = DIV_VEC %51, %52
-  STORE_TVALUE R6, %53
-  %61 = ADD_VEC %47, %53
-  STORE_TVALUE R4, %61
+  %19 = LOAD_TVALUE R1
+  %20 = NUM_TO_VEC 4
+  %21 = DIV_VEC %19, %20
+  %30 = ADD_VEC %14, %21
+  %40 = NUM_TO_VEC 0.5
+  %41 = LOAD_TVALUE R2
+  %42 = MUL_VEC %40, %41
+  %51 = ADD_VEC %30, %42
+  %56 = NUM_TO_VEC 40
+  %57 = LOAD_TVALUE R3
+  %58 = DIV_VEC %56, %57
+  %67 = ADD_VEC %51, %58
+  %68 = TAG_VECTOR %67
+  STORE_TVALUE R4, %68
   INTERRUPT 8u
   RETURN R4, 1i
 )");
@@ -262,7 +284,7 @@ bb_bytecode_1:
 
 TEST_CASE("ExtraMathMemoryOperands")
 {
-    ScopedFastFlag luauCodegenMathMemArgs{FFlag::LuauCodegenMathMemArgs, true};
+    ScopedFastFlag luauCodegenRemoveDeadStores{FFlag::LuauCodegenRemoveDeadStores4, true};
 
     CHECK_EQ("\n" + getCodegenAssembly(R"(
 local function foo(a: number, b: number, c: number, d: number, e: number)
@@ -283,31 +305,129 @@ bb_2:
 bb_bytecode_1:
   CHECK_SAFE_ENV exit(1)
   %16 = FLOOR_NUM R0
-  STORE_DOUBLE R9, %16
-  STORE_TAG R9, tnumber
   %23 = CEIL_NUM R1
-  STORE_DOUBLE R10, %23
-  STORE_TAG R10, tnumber
   %32 = ADD_NUM %16, %23
-  STORE_DOUBLE R8, %32
-  STORE_TAG R8, tnumber
   %39 = ROUND_NUM R2
-  STORE_DOUBLE R9, %39
   %48 = ADD_NUM %32, %39
-  STORE_DOUBLE R7, %48
-  STORE_TAG R7, tnumber
   %55 = SQRT_NUM R3
-  STORE_DOUBLE R8, %55
   %64 = ADD_NUM %48, %55
-  STORE_DOUBLE R6, %64
-  STORE_TAG R6, tnumber
   %71 = ABS_NUM R4
-  STORE_DOUBLE R7, %71
   %80 = ADD_NUM %64, %71
   STORE_DOUBLE R5, %80
   STORE_TAG R5, tnumber
   INTERRUPT 29u
   RETURN R5, 1i
+)");
+}
+
+TEST_CASE("DseInitialStackState")
+{
+    ScopedFastFlag luauCodegenRemoveDeadStores{FFlag::LuauCodegenRemoveDeadStores4, true};
+
+    CHECK_EQ("\n" + getCodegenAssembly(R"(
+local function foo()
+    while {} do
+        local _ = not _,{}
+        _ = nil
+    end
+end
+)"),
+        R"(
+; function foo() line 2
+bb_bytecode_0:
+  SET_SAVEDPC 1u
+  %1 = NEW_TABLE 0u, 0u
+  STORE_POINTER R0, %1
+  STORE_TAG R0, ttable
+  CHECK_GC
+  JUMP bb_2
+bb_2:
+  CHECK_SAFE_ENV exit(3)
+  JUMP_EQ_TAG K1, tnil, bb_fallback_4, bb_3
+bb_3:
+  %9 = LOAD_TVALUE K1
+  STORE_TVALUE R1, %9
+  JUMP bb_5
+bb_5:
+  SET_SAVEDPC 7u
+  %21 = NEW_TABLE 0u, 0u
+  STORE_POINTER R1, %21
+  STORE_TAG R1, ttable
+  CHECK_GC
+  STORE_TAG R0, tnil
+  INTERRUPT 9u
+  JUMP bb_bytecode_0
+)");
+}
+
+TEST_CASE("DseInitialStackState2")
+{
+    ScopedFastFlag luauCodegenRemoveDeadStores{FFlag::LuauCodegenRemoveDeadStores4, true};
+
+    CHECK_EQ("\n" + getCodegenAssembly(R"(
+local function foo(a)
+    math.frexp(a)
+    return a
+end
+)"),
+        R"(
+; function foo($arg0) line 2
+bb_bytecode_0:
+  CHECK_SAFE_ENV exit(1)
+  CHECK_TAG R0, tnumber, exit(1)
+  FASTCALL 14u, R1, R0, undef, 1i, 2i
+  INTERRUPT 5u
+  RETURN R0, 1i
+)");
+}
+
+TEST_CASE("DseInitialStackState3")
+{
+    ScopedFastFlag luauCodegenRemoveDeadStores{FFlag::LuauCodegenRemoveDeadStores4, true};
+
+    CHECK_EQ("\n" + getCodegenAssembly(R"(
+local function foo(a)
+    math.sign(a)
+    return a
+end
+)"),
+        R"(
+; function foo($arg0) line 2
+bb_bytecode_0:
+  CHECK_SAFE_ENV exit(1)
+  CHECK_TAG R0, tnumber, exit(1)
+  FASTCALL 47u, R1, R0, undef, 1i, 1i
+  INTERRUPT 5u
+  RETURN R0, 1i
+)");
+}
+
+TEST_CASE("VectorConstantTag")
+{
+    ScopedFastFlag luauCodegenRemoveDeadStores{FFlag::LuauCodegenRemoveDeadStores4, true};
+    ScopedFastFlag luauCodegenVectorTag2{FFlag::LuauCodegenVectorTag2, true};
+    ScopedFastFlag luauCodegenLoadTVTag{FFlag::LuauCodegenLoadTVTag, true};
+
+    CHECK_EQ("\n" + getCodegenAssembly(R"(
+local function vecrcp(a: vector)
+    return vector(1, 2, 3) + a
+end
+)"),
+R"(
+; function vecrcp($arg0) line 2
+bb_0:
+  CHECK_TAG R0, tvector, exit(entry)
+  JUMP bb_2
+bb_2:
+  JUMP bb_bytecode_1
+bb_bytecode_1:
+  %4 = LOAD_TVALUE K0, 0i, tvector
+  %11 = LOAD_TVALUE R0
+  %12 = ADD_VEC %4, %11
+  %13 = TAG_VECTOR %12
+  STORE_TVALUE R1, %13
+  INTERRUPT 2u
+  RETURN R1, 1i
 )");
 }
 

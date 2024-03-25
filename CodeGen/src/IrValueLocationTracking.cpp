@@ -119,7 +119,7 @@ void IrValueLocationTracking::beforeInstLowering(IrInst& inst)
         break;
 
         // These instructions read VmReg only after optimizeMemoryOperandsX64
-    case IrCmd::CHECK_TAG:
+    case IrCmd::CHECK_TAG: // TODO: remove with FFlagLuauCodegenRemoveDeadStores4
     case IrCmd::CHECK_TRUTHY:
     case IrCmd::ADD_NUM:
     case IrCmd::SUB_NUM:
@@ -159,6 +159,9 @@ void IrValueLocationTracking::afterInstLowering(IrInst& inst, uint32_t instIdx)
     case IrCmd::LOAD_DOUBLE:
     case IrCmd::LOAD_INT:
     case IrCmd::LOAD_TVALUE:
+        if (inst.a.kind == IrOpKind::VmReg)
+            invalidateRestoreOp(inst.a, /*skipValueInvalidation*/ false);
+
         recordRestoreOp(instIdx, inst.a);
         break;
     case IrCmd::STORE_POINTER:

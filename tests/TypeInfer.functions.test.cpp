@@ -8,6 +8,7 @@
 #include "Luau/Type.h"
 #include "Luau/VisitType.h"
 
+#include "ClassFixture.h"
 #include "Fixture.h"
 
 #include "doctest.h"
@@ -2307,6 +2308,118 @@ end
 
     CHECK_EQ("(number) -> boolean", toString(requireType("even")));
     CHECK_EQ("(number) -> boolean", toString(requireType("odd")));
+}
+
+TEST_CASE_FIXTURE(BuiltinsFixture, "tf_suggest_return_type")
+{
+    if (!FFlag::DebugLuauDeferredConstraintResolution)
+        return;
+    CheckResult result = check(R"(
+function fib(n)
+    return n < 2 and 1 or fib(n-1) + fib(n-2)
+end
+)");
+
+    LUAU_REQUIRE_ERRORS(result);
+    auto err = get<ExplicitFunctionAnnotationRecommended>(result.errors.back());
+    LUAU_ASSERT(err);
+    CHECK("false | number" == toString(err->recommendedReturn));
+    CHECK(err->recommendedArgs.size() == 0);
+}
+
+TEST_CASE_FIXTURE(BuiltinsFixture, "tf_suggest_arg_type")
+{
+    if (!FFlag::DebugLuauDeferredConstraintResolution)
+        return;
+    CheckResult result = check(R"(
+function fib(n, u)
+    return (n or u) and (n < u and n + fib(n,u))
+end
+)");
+
+    LUAU_REQUIRE_ERRORS(result);
+    auto err = get<ExplicitFunctionAnnotationRecommended>(result.errors.back());
+    LUAU_ASSERT(err);
+    CHECK("number" == toString(err->recommendedReturn));
+    CHECK(err->recommendedArgs.size() == 2);
+    CHECK("number" == toString(err->recommendedArgs[0].second));
+    CHECK("number" == toString(err->recommendedArgs[1].second));
+}
+
+TEST_CASE_FIXTURE(Fixture, "local_function_fwd_decl_doesnt_crash")
+{
+    CheckResult result = check(R"(
+        local foo
+
+        local function bar()
+            foo()
+        end
+
+        function foo()
+        end
+
+        bar()
+    )");
+
+    // This test verifies that an ICE doesn't occur, so the bulk of the test is
+    // just from running check above.
+    LUAU_REQUIRE_NO_ERRORS(result);
+}
+
+TEST_CASE_FIXTURE(Fixture, "bidirectional_checking_of_callback_property")
+{
+    CheckResult result = check(R"(
+        function print(x: number) end
+
+        type Point = {x: number, y: number}
+        local T : {callback: ((Point) -> ())?} = {}
+
+        T.callback = function(p) -- No error here
+            print(p.z)           -- error here.  Point has no property z
+        end
+    )");
+
+    LUAU_REQUIRE_ERROR_COUNT(1, result);
+
+    CHECK_MESSAGE(get<UnknownProperty>(result.errors[0]), "Expected UnknownProperty but got " << result.errors[0]);
+
+    Location location = result.errors[0].location;
+    CHECK(location.begin.line == 7);
+    CHECK(location.end.line == 7);
+}
+
+TEST_CASE_FIXTURE(ClassFixture, "bidirectional_inference_of_class_methods")
+{
+    CheckResult result = check(R"(
+        local c = ChildClass.New()
+
+        -- Instead of reporting that the lambda is the wrong type, report that we are using its argument improperly.
+        c.Touched:Connect(function(other)
+            print(other.ThisDoesNotExist)
+        end)
+    )");
+
+    LUAU_REQUIRE_ERROR_COUNT(1, result);
+
+    UnknownProperty* err = get<UnknownProperty>(result.errors[0]);
+    REQUIRE(err);
+
+    CHECK("ThisDoesNotExist" == err->key);
+    CHECK("BaseClass" == toString(err->table));
+}
+
+TEST_CASE_FIXTURE(Fixture, "pass_table_literal_to_function_expecting_optional_prop")
+{
+    CheckResult result = check(R"(
+        type T = {prop: number?}
+
+        function f(t: T) end
+
+        f({prop=5})
+        f({})
+    )");
+
+    LUAU_REQUIRE_NO_ERRORS(result);
 }
 
 TEST_SUITE_END();

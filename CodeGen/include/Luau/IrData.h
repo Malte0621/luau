@@ -59,7 +59,8 @@ enum class IrCmd : uint8_t
 
     // Load a TValue from memory
     // A: Rn or Kn or pointer (TValue)
-    // B: int (optional 'A' pointer offset)
+    // B: int/none (optional 'A' pointer offset)
+    // C: tag/none (tag of the value being loaded)
     LOAD_TVALUE,
 
     // Load current environment table
@@ -304,7 +305,11 @@ enum class IrCmd : uint8_t
 
     // Converts a double number to a vector with the value in X/Y/Z
     // A: double
-    NUM_TO_VECTOR,
+    NUM_TO_VEC,
+
+    // Adds VECTOR type tag to a vector, preserving X/Y/Z components
+    // A: TValue
+    TAG_VECTOR,
 
     // Adjust stack top (L->top) to point at 'B' TValues *after* the specified register
     // This is used to return multiple values
@@ -317,7 +322,7 @@ enum class IrCmd : uint8_t
     ADJUST_STACK_TO_TOP,
 
     // Execute fastcall builtin function in-place
-    // A: builtin
+    // A: unsigned int (builtin id)
     // B: Rn (result start)
     // C: Rn (argument start)
     // D: Rn or Kn or undef (optional second argument)
@@ -326,7 +331,7 @@ enum class IrCmd : uint8_t
     FASTCALL,
 
     // Call the fastcall builtin function
-    // A: builtin
+    // A: unsigned int (builtin id)
     // B: Rn (result start)
     // C: Rn (argument start)
     // D: Rn or Kn or undef (optional second argument)
@@ -394,6 +399,7 @@ enum class IrCmd : uint8_t
     // A, B: tag
     // C: block/vmexit/undef
     // In final x64 lowering, A can also be Rn
+    // When DebugLuauAbortingChecks flag is enabled, A can also be Rn
     // When undef is specified instead of a block, execution is aborted on check failure
     CHECK_TAG,
 

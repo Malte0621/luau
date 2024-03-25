@@ -293,6 +293,24 @@ end
 
 assert(loopIteratorProtocol(0, table.create(100, 5)) == 5058)
 
+function valueTrackingIssue1()
+  local b = buffer.create(1)
+  buffer.writeu8(b, 0, 0)
+  local v1
+
+  local function closure()
+    assert(type(b) == "buffer") -- b is the first upvalue
+    v1 = nil -- v1 is the second upvalue
+
+    -- prevent inlining
+    for i = 1, 100 do print(`{b} is {b}`) end
+  end
+
+  closure()
+end
+
+valueTrackingIssue1()
+
 local function vec3compsum(a: vector)
   return a.X + a.Y + a.Z
 end
@@ -388,5 +406,47 @@ local function bufferbounds(zero)
 end
 
 bufferbounds(0)
+
+function deadStoreChecks1()
+  local a = 1.0
+  local b = 0.0
+
+  local function update()
+    b += a
+    for i = 1, 100 do print(`{b} is {b}`) end
+  end
+
+  update()
+  a = 10
+  update()
+  a = 100
+  update()
+
+  return b
+end
+
+assert(deadStoreChecks1() == 111)
+
+local function extramath1(a)
+  return type(math.sign(a))
+end
+
+assert(extramath1(2) == "number")
+assert(extramath1("2") == "number")
+
+local function extramath2(a)
+  return type(math.modf(a))
+end
+
+assert(extramath2(2) == "number")
+assert(extramath2("2") == "number")
+
+local function extramath3(a)
+  local b, c = math.modf(a)
+  return type(c)
+end
+
+assert(extramath3(2) == "number")
+assert(extramath3("2") == "number")
 
 return('OK')
