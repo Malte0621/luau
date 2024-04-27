@@ -289,7 +289,8 @@ struct lua_State
 
 	int identity = 2; /* The current luastate's identity (for lrbx's security stuff) */
     taskSchedulerInfo* taskScheduler; // task scheduler addon
-
+    lua_State* parent = nullptr; // parent state (for reverse traversal)
+    unsigned char storage = 0; // storage for custom shared data
 
     Table* gt;           // table of globals
     UpVal* openupval;    // list of open upvalues in this stack

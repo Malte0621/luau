@@ -189,6 +189,8 @@ lua_State* lua_newthread(lua_State* L)
         g->cb.userthread(L, L1);
     L1->taskScheduler = L->taskScheduler; // Reference the task scheduler info.
     L1->identity = L->identity;
+    L1->parent = L;
+    L1->storage = 0;
     return L1;
 }
 
