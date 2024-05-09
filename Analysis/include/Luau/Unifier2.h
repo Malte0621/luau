@@ -2,11 +2,12 @@
 
 #pragma once
 
+#include "Luau/Constraint.h"
 #include "Luau/DenseHash.h"
 #include "Luau/NotNull.h"
-#include "Luau/TypePairHash.h"
 #include "Luau/TypeCheckLimits.h"
 #include "Luau/TypeFwd.h"
+#include "Luau/TypePairHash.h"
 
 #include <optional>
 #include <vector>
@@ -46,7 +47,13 @@ struct Unifier2
     int recursionCount = 0;
     int recursionLimit = 0;
 
+    std::vector<ConstraintV> incompleteSubtypes;
+    // null if not in a constraint solving context
+    DenseHashSet<const void*>* uninhabitedTypeFamilies;
+
     Unifier2(NotNull<TypeArena> arena, NotNull<BuiltinTypes> builtinTypes, NotNull<Scope> scope, NotNull<InternalErrorReporter> ice);
+    Unifier2(NotNull<TypeArena> arena, NotNull<BuiltinTypes> builtinTypes, NotNull<Scope> scope, NotNull<InternalErrorReporter> ice,
+        DenseHashSet<const void*>* uninhabitedTypeFamilies);
 
     /** Attempt to commit the subtype relation subTy <: superTy to the type
      * graph.
@@ -61,6 +68,7 @@ struct Unifier2
      * free TypePack to another and encounter an occurs check violation.
      */
     bool unify(TypeId subTy, TypeId superTy);
+    bool unifyFreeWithType(TypeId subTy, TypeId superTy);
     bool unify(const LocalType* subTy, TypeId superFn);
     bool unify(TypeId subTy, const FunctionType* superFn);
     bool unify(const UnionType* subUnion, TypeId superTy);

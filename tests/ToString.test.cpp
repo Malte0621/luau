@@ -238,7 +238,6 @@ TEST_CASE_FIXTURE(Fixture, "functions_are_always_parenthesized_in_unions_or_inte
 
 TEST_CASE_FIXTURE(Fixture, "simple_intersections_printed_on_one_line")
 {
-    ScopedFastFlag sff{FFlag::LuauToStringSimpleCompositeTypesSingleLine, true};
     CheckResult result = check(R"(
         local a: string & number
     )");
@@ -251,7 +250,6 @@ TEST_CASE_FIXTURE(Fixture, "simple_intersections_printed_on_one_line")
 
 TEST_CASE_FIXTURE(Fixture, "complex_intersections_printed_on_multiple_lines")
 {
-    ScopedFastFlag sff{FFlag::LuauToStringSimpleCompositeTypesSingleLine, true};
     CheckResult result = check(R"(
         local a: string & number & boolean
     )");
@@ -270,7 +268,6 @@ TEST_CASE_FIXTURE(Fixture, "complex_intersections_printed_on_multiple_lines")
 
 TEST_CASE_FIXTURE(Fixture, "overloaded_functions_always_printed_on_multiple_lines")
 {
-    ScopedFastFlag sff{FFlag::LuauToStringSimpleCompositeTypesSingleLine, true};
     CheckResult result = check(R"(
         local a: ((string) -> string) & ((number) -> number)
     )");
@@ -287,7 +284,6 @@ TEST_CASE_FIXTURE(Fixture, "overloaded_functions_always_printed_on_multiple_line
 
 TEST_CASE_FIXTURE(Fixture, "simple_unions_printed_on_one_line")
 {
-    ScopedFastFlag sff{FFlag::LuauToStringSimpleCompositeTypesSingleLine, true};
     CheckResult result = check(R"(
         local a: number | boolean
     )");
@@ -300,7 +296,6 @@ TEST_CASE_FIXTURE(Fixture, "simple_unions_printed_on_one_line")
 
 TEST_CASE_FIXTURE(Fixture, "complex_unions_printed_on_multiple_lines")
 {
-    ScopedFastFlag sff{FFlag::LuauToStringSimpleCompositeTypesSingleLine, true};
     CheckResult result = check(R"(
         local a: string | number | boolean
     )");
@@ -878,7 +873,11 @@ TEST_CASE_FIXTURE(Fixture, "toStringNamedFunction_include_self_param")
 
     TypeId parentTy = requireType("foo");
     auto ttv = get<TableType>(follow(parentTy));
-    auto ftv = get<FunctionType>(follow(ttv->props.at("method").type()));
+    REQUIRE(ttv);
+
+    TypeId methodTy = ttv->props.at("method").type();
+    auto ftv = get<FunctionType>(follow(methodTy));
+    REQUIRE_MESSAGE(ftv, methodTy);
 
     if (FFlag::DebugLuauDeferredConstraintResolution)
         CHECK_EQ("foo:method(self: unknown, arg: string): ()", toStringNamedFunction("foo:method", *ftv));
@@ -939,7 +938,8 @@ TEST_CASE_FIXTURE(Fixture, "tostring_error_mismatch")
 
     std::string expected;
     if (FFlag::DebugLuauDeferredConstraintResolution)
-        expected = R"(Type pack '{ a: number, b: string, c: { d: string } }' could not be converted into '{ a: number, b: string, c: { d: number } }'; at [0][read "c"][read "d"], string is not exactly number)";
+        expected =
+            R"(Type pack '{ a: number, b: string, c: { d: string } }' could not be converted into '{ a: number, b: string, c: { d: number } }'; at [0][read "c"][read "d"], string is not exactly number)";
     else
         expected = R"(Type
     '{ a: number, b: string, c: { d: string } }'
@@ -996,6 +996,27 @@ TEST_CASE_FIXTURE(Fixture, "read_only_properties")
 
     CHECK("{ x: string }" == toString(requireTypeAlias("A"), {true}));
     CHECK("{ read x: string }" == toString(requireTypeAlias("B"), {true}));
+}
+
+TEST_CASE_FIXTURE(Fixture, "cycle_rooted_in_a_pack")
+{
+    TypeArena arena;
+
+    TypePackId thePack = arena.addTypePack({builtinTypes->numberType, builtinTypes->numberType});
+    TypePack* packPtr = getMutable<TypePack>(thePack);
+    REQUIRE(packPtr);
+
+    const TableType::Props theProps = {{"BaseField", Property::readonly(builtinTypes->unknownType)},
+        {"BaseMethod", Property::readonly(arena.addType(FunctionType{thePack, arena.addTypePack({})}))}};
+
+    TypeId theTable = arena.addType(TableType{theProps, {}, TypeLevel{}, TableState::Sealed});
+
+    packPtr->head[0] = theTable;
+
+    if (FFlag::DebugLuauDeferredConstraintResolution)
+        CHECK("tp1 where tp1 = { read BaseField: unknown, read BaseMethod: (tp1) -> () }, number" == toString(thePack));
+    else
+        CHECK("tp1 where tp1 = {| BaseField: unknown, BaseMethod: (tp1) -> () |}, number" == toString(thePack));
 }
 
 TEST_SUITE_END();

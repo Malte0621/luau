@@ -13,7 +13,7 @@
 
 #include <string.h>
 
-LUAU_FASTFLAGVARIABLE(LuauLoadExceptionSafe, false)
+LUAU_FASTFLAG(LuauLoadTypeInfo)
 
 // TODO: RAII deallocation doesn't work for longjmp builds if a memory error happens
 template<typename T>
@@ -54,11 +54,8 @@ public:
     ScopedSetGCThreshold(global_State* global, size_t newThreshold) noexcept
         : global{global}
     {
-        if (FFlag::LuauLoadExceptionSafe)
-        {
-            originalThreshold = global->GCthreshold;
-            global->GCthreshold = newThreshold;
-        }
+        originalThreshold = global->GCthreshold;
+        global->GCthreshold = newThreshold;
     }
 
     ScopedSetGCThreshold(const ScopedSetGCThreshold&) = delete;
@@ -69,10 +66,7 @@ public:
 
     ~ScopedSetGCThreshold() noexcept
     {
-        if (FFlag::LuauLoadExceptionSafe)
-        {
-            global->GCthreshold = originalThreshold;
-        }
+        global->GCthreshold = originalThreshold;
     }
 
 private:
@@ -222,12 +216,6 @@ int luau_load(lua_State* L, const char* chunkname, const char* data, size_t size
 
     // pause GC for the duration of deserialization - some objects we're creating aren't rooted
     const ScopedSetGCThreshold pauseGC{L->global, SIZE_MAX};
-    size_t GCthreshold = L->global->GCthreshold;
-
-    if (!FFlag::LuauLoadExceptionSafe)
-    {
-        L->global->GCthreshold = SIZE_MAX;
-    }
 
     // env is 0 for current environment and a stack index otherwise
     Table* envt = (env == 0) ? L->gt : hvalue(luaA_toobject(L, env));
@@ -272,61 +260,99 @@ int luau_load(lua_State* L, const char* chunkname, const char* data, size_t size
         {
             p->flags = read<uint8_t>(data, size, offset);
 
-            uint32_t typesize = readVarInt(data, size, offset);
-
-            if (typesize && typesversion == LBC_TYPE_VERSION)
+            if (FFlag::LuauLoadTypeInfo)
             {
-                uint8_t* types = (uint8_t*)data + offset;
+                if (typesversion == 1)
+                {
+                    uint32_t typesize = readVarInt(data, size, offset);
 
-                LUAU_ASSERT(typesize == unsigned(2 + p->numparams));
-                LUAU_ASSERT(types[0] == LBC_TYPE_FUNCTION);
-                LUAU_ASSERT(types[1] == p->numparams);
+                    if (typesize)
+                    {
+                        uint8_t* types = (uint8_t*)data + offset;
 
-                p->typeinfo = luaM_newarray(L, typesize, uint8_t, p->memcat);
-                memcpy(p->typeinfo, types, typesize);
+                        LUAU_ASSERT(typesize == unsigned(2 + p->numparams));
+                        LUAU_ASSERT(types[0] == LBC_TYPE_FUNCTION);
+                        LUAU_ASSERT(types[1] == p->numparams);
+
+                        // transform v1 into v2 format
+                        int headersize = typesize > 127 ? 4 : 3;
+
+                        p->typeinfo = luaM_newarray(L, headersize + typesize, uint8_t, p->memcat);
+                        p->sizetypeinfo = headersize + typesize;
+
+                        if (headersize == 4)
+                        {
+                            p->typeinfo[0] = (typesize & 127) | (1 << 7);
+                            p->typeinfo[1] = typesize >> 7;
+                            p->typeinfo[2] = 0;
+                            p->typeinfo[3] = 0;
+                        }
+                        else
+                        {
+                            p->typeinfo[0] = uint8_t(typesize);
+                            p->typeinfo[1] = 0;
+                            p->typeinfo[2] = 0;
+                        }
+
+                        memcpy(p->typeinfo + headersize, types, typesize);
+                    }
+
+                    offset += typesize;
+                }
+                else if (typesversion == 2)
+                {
+                    uint32_t typesize = readVarInt(data, size, offset);
+
+                    if (typesize)
+                    {
+                        uint8_t* types = (uint8_t*)data + offset;
+
+                        p->typeinfo = luaM_newarray(L, typesize, uint8_t, p->memcat);
+                        p->sizetypeinfo = typesize;
+                        memcpy(p->typeinfo, types, typesize);
+                        offset += typesize;
+                    }
+                }
             }
+            else
+            {
+                uint32_t typesize = readVarInt(data, size, offset);
 
-            offset += typesize;
+                if (typesize && typesversion == LBC_TYPE_VERSION_DEPRECATED)
+                {
+                    uint8_t* types = (uint8_t*)data + offset;
+
+                    LUAU_ASSERT(typesize == unsigned(2 + p->numparams));
+                    LUAU_ASSERT(types[0] == LBC_TYPE_FUNCTION);
+                    LUAU_ASSERT(types[1] == p->numparams);
+
+                    p->typeinfo = luaM_newarray(L, typesize, uint8_t, p->memcat);
+                    memcpy(p->typeinfo, types, typesize);
+                }
+
+                offset += typesize;
+            }
         }
 
-        if (FFlag::LuauLoadExceptionSafe)
-        {
-            const int sizecode = readVarInt(data, size, offset);
-            p->code = luaM_newarray(L, sizecode, Instruction, p->memcat);
-            p->sizecode = sizecode;
-        }
-        else
-        {
-            p->sizecode = readVarInt(data, size, offset);
-            p->code = luaM_newarray(L, p->sizecode, Instruction, p->memcat);
-        }
+        const int sizecode = readVarInt(data, size, offset);
+        p->code = luaM_newarray(L, sizecode, Instruction, p->memcat);
+        p->sizecode = sizecode;
 
         for (int j = 0; j < p->sizecode; ++j)
             p->code[j] = read<uint32_t>(data, size, offset);
 
         p->codeentry = p->code;
 
-        if (FFlag::LuauLoadExceptionSafe)
-        {
-            const int sizek = readVarInt(data, size, offset);
-            p->k = luaM_newarray(L, sizek, TValue, p->memcat);
-            p->sizek = sizek;
-        }
-        else
-        {
-            p->sizek = readVarInt(data, size, offset);
-            p->k = luaM_newarray(L, p->sizek, TValue, p->memcat);
-        }
+        const int sizek = readVarInt(data, size, offset);
+        p->k = luaM_newarray(L, sizek, TValue, p->memcat);
+        p->sizek = sizek;
 
-        if (FFlag::LuauLoadExceptionSafe)
+        // Initialize the constants to nil to ensure they have a valid state
+        // in the event that some operation in the following loop fails with
+        // an exception.
+        for (int j = 0; j < p->sizek; ++j)
         {
-            // Initialize the constants to nil to ensure they have a valid state
-            // in the event that some operation in the following loop fails with
-            // an exception.
-            for (int j = 0; j < p->sizek; ++j)
-            {
-                setnilvalue(&p->k[j]);
-            }
+            setnilvalue(&p->k[j]);
         }
 
         for (int j = 0; j < p->sizek; ++j)
@@ -334,10 +360,7 @@ int luau_load(lua_State* L, const char* chunkname, const char* data, size_t size
             switch (read<uint8_t>(data, size, offset))
             {
             case LBC_CONSTANT_NIL:
-                if (!FFlag::LuauLoadExceptionSafe)
-                {
-                    setnilvalue(&p->k[j]);
-                }
+                // All constants have already been pre-initialized to nil
                 break;
 
             case LBC_CONSTANT_BOOLEAN:
@@ -409,17 +432,9 @@ int luau_load(lua_State* L, const char* chunkname, const char* data, size_t size
             }
         }
 
-        if (FFlag::LuauLoadExceptionSafe)
-        {
-            const int sizep = readVarInt(data, size, offset);
-            p->p = luaM_newarray(L, sizep, Proto*, p->memcat);
-            p->sizep = sizep;
-        }
-        else
-        {
-            p->sizep = readVarInt(data, size, offset);
-            p->p = luaM_newarray(L, p->sizep, Proto*, p->memcat);
-        }
+        const int sizep = readVarInt(data, size, offset);
+        p->p = luaM_newarray(L, sizep, Proto*, p->memcat);
+        p->sizep = sizep;
 
         for (int j = 0; j < p->sizep; ++j)
         {
@@ -439,17 +454,9 @@ int luau_load(lua_State* L, const char* chunkname, const char* data, size_t size
             int intervals = ((p->sizecode - 1) >> p->linegaplog2) + 1;
             int absoffset = (p->sizecode + 3) & ~3;
 
-            if (FFlag::LuauLoadExceptionSafe)
-            {
-                const int sizelineinfo = absoffset + intervals * sizeof(int);
-                p->lineinfo = luaM_newarray(L, sizelineinfo, uint8_t, p->memcat);
-                p->sizelineinfo = sizelineinfo;
-            }
-            else
-            {
-                p->sizelineinfo = absoffset + intervals * sizeof(int);
-                p->lineinfo = luaM_newarray(L, p->sizelineinfo, uint8_t, p->memcat);
-            }
+            const int sizelineinfo = absoffset + intervals * sizeof(int);
+            p->lineinfo = luaM_newarray(L, sizelineinfo, uint8_t, p->memcat);
+            p->sizelineinfo = sizelineinfo;
 
             p->abslineinfo = (int*)(p->lineinfo + absoffset);
 
@@ -472,17 +479,9 @@ int luau_load(lua_State* L, const char* chunkname, const char* data, size_t size
 
         if (debuginfo)
         {
-            if (FFlag::LuauLoadExceptionSafe)
-            {
-                const int sizelocvars = readVarInt(data, size, offset);
-                p->locvars = luaM_newarray(L, sizelocvars, LocVar, p->memcat);
-                p->sizelocvars = sizelocvars;
-            }
-            else
-            {
-                p->sizelocvars = readVarInt(data, size, offset);
-                p->locvars = luaM_newarray(L, p->sizelocvars, LocVar, p->memcat);
-            }
+            const int sizelocvars = readVarInt(data, size, offset);
+            p->locvars = luaM_newarray(L, sizelocvars, LocVar, p->memcat);
+            p->sizelocvars = sizelocvars;
 
             for (int j = 0; j < p->sizelocvars; ++j)
             {
@@ -492,17 +491,11 @@ int luau_load(lua_State* L, const char* chunkname, const char* data, size_t size
                 p->locvars[j].reg = read<uint8_t>(data, size, offset);
             }
 
-            if (FFlag::LuauLoadExceptionSafe)
-            {
-                const int sizeupvalues = readVarInt(data, size, offset);
-                p->upvalues = luaM_newarray(L, sizeupvalues, TString*, p->memcat);
-                p->sizeupvalues = sizeupvalues;
-            }
-            else
-            {
-                p->sizeupvalues = readVarInt(data, size, offset);
-                p->upvalues = luaM_newarray(L, p->sizeupvalues, TString*, p->memcat);
-            }
+            const int sizeupvalues = readVarInt(data, size, offset);
+            LUAU_ASSERT(sizeupvalues == p->nups);
+
+            p->upvalues = luaM_newarray(L, sizeupvalues, TString*, p->memcat);
+            p->sizeupvalues = sizeupvalues;
 
             for (int j = 0; j < p->sizeupvalues; ++j)
             {
@@ -522,11 +515,6 @@ int luau_load(lua_State* L, const char* chunkname, const char* data, size_t size
     Closure* cl = luaF_newLclosure(L, 0, envt, main);
     setclvalue(L, L->top, cl);
     incr_top(L);
-
-    if (!FFlag::LuauLoadExceptionSafe)
-    {
-        L->global->GCthreshold = GCthreshold;
-    }
 
     return 0;
 }

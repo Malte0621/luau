@@ -15,7 +15,6 @@
 
 LUAU_FASTFLAG(LuauTraceTypesInNonstrictMode2)
 LUAU_FASTFLAG(LuauSetMetatableDoesNotTimeTravel)
-LUAU_FASTFLAG(LuauAutocompleteStringLiteralBounds);
 
 using namespace Luau;
 
@@ -146,36 +145,38 @@ struct ACBuiltinsFixture : ACFixtureImpl<BuiltinsFixture>
 {
 };
 
-#define LUAU_CHECK_HAS_KEY(map, key) do                               \
-    {                                                                 \
-        auto&& _m = (map);                                            \
-        auto&& _k = (key);                                            \
-        const size_t count = _m.count(_k);                            \
+#define LUAU_CHECK_HAS_KEY(map, key) \
+    do \
+    { \
+        auto&& _m = (map); \
+        auto&& _k = (key); \
+        const size_t count = _m.count(_k); \
         CHECK_MESSAGE(count, "Map should have key \"" << _k << "\""); \
-        if (!count)                                                   \
-        {                                                             \
-            MESSAGE("Keys: (count " << _m.size() << ")");             \
-            for (const auto& [k, v]: _m)                              \
-            {                                                         \
-                MESSAGE("\tkey: " << k);                              \
-            }                                                         \
-        }                                                             \
+        if (!count) \
+        { \
+            MESSAGE("Keys: (count " << _m.size() << ")"); \
+            for (const auto& [k, v] : _m) \
+            { \
+                MESSAGE("\tkey: " << k); \
+            } \
+        } \
     } while (false)
 
-#define LUAU_CHECK_HAS_NO_KEY(map, key) do                                 \
-    {                                                                      \
-        auto&& _m = (map);                                                 \
-        auto&& _k = (key);                                                 \
-        const size_t count = _m.count(_k);                                 \
+#define LUAU_CHECK_HAS_NO_KEY(map, key) \
+    do \
+    { \
+        auto&& _m = (map); \
+        auto&& _k = (key); \
+        const size_t count = _m.count(_k); \
         CHECK_MESSAGE(!count, "Map should not have key \"" << _k << "\""); \
-        if (count)                                                         \
-        {                                                                  \
-            MESSAGE("Keys: (count " << _m.size() << ")");                  \
-            for (const auto& [k, v]: _m)                                   \
-            {                                                              \
-                MESSAGE("\tkey: " << k);                                   \
-            }                                                              \
-        }                                                                  \
+        if (count) \
+        { \
+            MESSAGE("Keys: (count " << _m.size() << ")"); \
+            for (const auto& [k, v] : _m) \
+            { \
+                MESSAGE("\tkey: " << k); \
+            } \
+        } \
     } while (false)
 
 TEST_SUITE_BEGIN("AutocompleteTest");
@@ -3188,7 +3189,6 @@ TEST_CASE_FIXTURE(ACFixture, "string_singleton_as_table_key")
 TEST_CASE_FIXTURE(ACFixture, "string_singleton_in_if_statement")
 {
     ScopedFastFlag sff[]{
-        {FFlag::LuauAutocompleteStringLiteralBounds, true},
         {FFlag::DebugLuauDeferredConstraintResolution, true},
     };
 
@@ -3215,7 +3215,93 @@ TEST_CASE_FIXTURE(ACFixture, "string_singleton_in_if_statement")
 
     ac = autocomplete('2');
 
-    CHECK(ac.entryMap.count("left"));
+    LUAU_CHECK_HAS_KEY(ac.entryMap, "left");
+    LUAU_CHECK_HAS_KEY(ac.entryMap, "right");
+
+    ac = autocomplete('3');
+
+    LUAU_CHECK_HAS_NO_KEY(ac.entryMap, "left");
+    LUAU_CHECK_HAS_NO_KEY(ac.entryMap, "right");
+
+    ac = autocomplete('4');
+
+    LUAU_CHECK_HAS_NO_KEY(ac.entryMap, "left");
+    LUAU_CHECK_HAS_NO_KEY(ac.entryMap, "right");
+
+    ac = autocomplete('5');
+
+    LUAU_CHECK_HAS_KEY(ac.entryMap, "left");
+    LUAU_CHECK_HAS_KEY(ac.entryMap, "right");
+
+    ac = autocomplete('6');
+
+    LUAU_CHECK_HAS_NO_KEY(ac.entryMap, "left");
+    LUAU_CHECK_HAS_NO_KEY(ac.entryMap, "right");
+
+    ac = autocomplete('7');
+
+    LUAU_CHECK_HAS_NO_KEY(ac.entryMap, "left");
+    LUAU_CHECK_HAS_NO_KEY(ac.entryMap, "right");
+
+    ac = autocomplete('8');
+
+    LUAU_CHECK_HAS_KEY(ac.entryMap, "left");
+    LUAU_CHECK_HAS_KEY(ac.entryMap, "right");
+
+    ac = autocomplete('9');
+
+    LUAU_CHECK_HAS_NO_KEY(ac.entryMap, "left");
+    LUAU_CHECK_HAS_NO_KEY(ac.entryMap, "right");
+
+    ac = autocomplete('A');
+
+    LUAU_CHECK_HAS_NO_KEY(ac.entryMap, "left");
+    LUAU_CHECK_HAS_NO_KEY(ac.entryMap, "right");
+
+    ac = autocomplete('B');
+
+    LUAU_CHECK_HAS_KEY(ac.entryMap, "left");
+    LUAU_CHECK_HAS_KEY(ac.entryMap, "right");
+
+    ac = autocomplete('C');
+
+    LUAU_CHECK_HAS_NO_KEY(ac.entryMap, "left");
+    LUAU_CHECK_HAS_NO_KEY(ac.entryMap, "right");
+}
+
+// https://github.com/Roblox/luau/issues/858
+TEST_CASE_FIXTURE(ACFixture, "string_singleton_in_if_statement2")
+{
+    ScopedFastFlag sff[]{
+        {FFlag::DebugLuauDeferredConstraintResolution, true},
+    };
+
+    check(R"(
+        --!strict
+
+        type Direction = "left" | "right"
+
+        local dir: Direction
+        -- typestate here means dir is actually typed as `"left"`
+        dir = "left"
+
+        if dir == @1"@2"@3 then end
+        local a: {[Direction]: boolean} = {[@4"@5"@6]}
+
+        if dir == @7`@8`@9 then end
+        local a: {[Direction]: boolean} = {[@A`@B`@C]}
+    )");
+
+    Luau::AutocompleteResult ac;
+
+    ac = autocomplete('1');
+
+    LUAU_CHECK_HAS_NO_KEY(ac.entryMap, "left");
+    LUAU_CHECK_HAS_NO_KEY(ac.entryMap, "right");
+
+    ac = autocomplete('2');
+
+    LUAU_CHECK_HAS_KEY(ac.entryMap, "left");
     LUAU_CHECK_HAS_NO_KEY(ac.entryMap, "right");
 
     ac = autocomplete('3');
@@ -3231,7 +3317,7 @@ TEST_CASE_FIXTURE(ACFixture, "string_singleton_in_if_statement")
     ac = autocomplete('5');
 
     LUAU_CHECK_HAS_KEY(ac.entryMap, "left");
-    CHECK(ac.entryMap.count("right"));
+    LUAU_CHECK_HAS_KEY(ac.entryMap, "right");
 
     ac = autocomplete('6');
 
@@ -3245,7 +3331,7 @@ TEST_CASE_FIXTURE(ACFixture, "string_singleton_in_if_statement")
 
     ac = autocomplete('8');
 
-    CHECK(ac.entryMap.count("left"));
+    LUAU_CHECK_HAS_KEY(ac.entryMap, "left");
     LUAU_CHECK_HAS_NO_KEY(ac.entryMap, "right");
 
     ac = autocomplete('9');
@@ -3260,8 +3346,8 @@ TEST_CASE_FIXTURE(ACFixture, "string_singleton_in_if_statement")
 
     ac = autocomplete('B');
 
-    CHECK(ac.entryMap.count("left"));
-    CHECK(ac.entryMap.count("right"));
+    LUAU_CHECK_HAS_KEY(ac.entryMap, "left");
+    LUAU_CHECK_HAS_KEY(ac.entryMap, "right");
 
     ac = autocomplete('C');
 

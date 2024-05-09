@@ -17,10 +17,8 @@
 LUAU_FASTINTVARIABLE(LuauCodeGenMinLinearBlockPath, 3)
 LUAU_FASTINTVARIABLE(LuauCodeGenReuseSlotLimit, 64)
 LUAU_FASTFLAGVARIABLE(DebugLuauAbortingChecks, false)
-LUAU_FASTFLAG(LuauCodegenVectorTag2)
-LUAU_DYNAMIC_FASTFLAGVARIABLE(LuauCodeGenCoverForgprepEffect, false)
-LUAU_FASTFLAG(LuauCodegenRemoveDeadStores4)
-LUAU_FASTFLAG(LuauCodegenLoadTVTag)
+LUAU_FASTFLAG(LuauCodegenRemoveDeadStores5)
+LUAU_FASTFLAGVARIABLE(LuauCodegenLoadPropCheckRegLinkInTv, false)
 
 namespace Luau
 {
@@ -610,7 +608,7 @@ static void constPropInInst(ConstPropState& state, IrBuilder& build, IrFunction&
 
                 if (state.tryGetTag(source) == value)
                 {
-                    if (FFlag::DebugLuauAbortingChecks && !FFlag::LuauCodegenRemoveDeadStores4)
+                    if (FFlag::DebugLuauAbortingChecks && !FFlag::LuauCodegenRemoveDeadStores5)
                         replace(function, block, index, {IrCmd::CHECK_TAG, inst.a, inst.b, build.undef()});
                     else
                         kill(function, inst);
@@ -717,19 +715,10 @@ static void constPropInInst(ConstPropState& state, IrBuilder& build, IrFunction&
             {
                 if (IrInst* arg = function.asInstOp(inst.b))
                 {
-                    if (FFlag::LuauCodegenVectorTag2)
-                    {
-                        if (arg->cmd == IrCmd::TAG_VECTOR)
-                            tag = LUA_TVECTOR;
-                    }
-                    else
-                    {
-                        if (arg->cmd == IrCmd::ADD_VEC || arg->cmd == IrCmd::SUB_VEC || arg->cmd == IrCmd::MUL_VEC || arg->cmd == IrCmd::DIV_VEC ||
-                            arg->cmd == IrCmd::UNM_VEC)
-                            tag = LUA_TVECTOR;
-                    }
+                    if (arg->cmd == IrCmd::TAG_VECTOR)
+                        tag = LUA_TVECTOR;
 
-                    if (FFlag::LuauCodegenLoadTVTag && arg->cmd == IrCmd::LOAD_TVALUE && arg->c.kind != IrOpKind::None)
+                    if (arg->cmd == IrCmd::LOAD_TVALUE && arg->c.kind != IrOpKind::None)
                         tag = function.tagOp(arg->c);
                 }
             }
@@ -748,9 +737,10 @@ static void constPropInInst(ConstPropState& state, IrBuilder& build, IrFunction&
             IrCmd activeLoadCmd = IrCmd::NOP;
             uint32_t activeLoadValue = kInvalidInstIdx;
 
-            if (tag != 0xff)
+            // If we know the tag, we can try extracting the value from a register used by LOAD_TVALUE
+            // To do that, we have to ensure that the register link of the source value is still valid
+            if (tag != 0xff && (!FFlag::LuauCodegenLoadPropCheckRegLinkInTv || state.tryGetRegLink(inst.b) != nullptr))
             {
-                // If we know the tag, try to extract the value from a register used by LOAD_TVALUE
                 if (IrInst* arg = function.asInstOp(inst.b); arg && arg->cmd == IrCmd::LOAD_TVALUE && arg->a.kind == IrOpKind::VmReg)
                 {
                     std::tie(activeLoadCmd, activeLoadValue) = state.getPreviousVersionedLoadForTag(tag, arg->a);
@@ -905,8 +895,18 @@ static void constPropInInst(ConstPropState& state, IrBuilder& build, IrFunction&
     case IrCmd::CHECK_TAG:
     {
         uint8_t b = function.tagOp(inst.b);
+        uint8_t tag = state.tryGetTag(inst.a);
 
-        if (uint8_t tag = state.tryGetTag(inst.a); tag != 0xff)
+        if (tag == 0xff)
+        {
+            if (IrOp value = state.tryGetValue(inst.a); value.kind == IrOpKind::Constant)
+            {
+                if (function.constOp(value).kind == IrConstKind::Double)
+                    tag = LUA_TNUMBER;
+            }
+        }
+
+        if (tag != 0xff)
         {
             if (tag == b)
             {
@@ -1075,7 +1075,7 @@ static void constPropInInst(ConstPropState& state, IrBuilder& build, IrFunction&
 
     case IrCmd::FASTCALL:
     {
-        if (FFlag::LuauCodegenRemoveDeadStores4)
+        if (FFlag::LuauCodegenRemoveDeadStores5)
         {
             LuauBuiltinFunction bfid = LuauBuiltinFunction(function.uintOp(inst.a));
             int firstReturnReg = vmRegOp(inst.b);
@@ -1296,22 +1296,16 @@ static void constPropInInst(ConstPropState& state, IrBuilder& build, IrFunction&
     case IrCmd::SUB_VEC:
     case IrCmd::MUL_VEC:
     case IrCmd::DIV_VEC:
-        if (FFlag::LuauCodegenVectorTag2)
-        {
-            if (IrInst* a = function.asInstOp(inst.a); a && a->cmd == IrCmd::TAG_VECTOR)
-                replace(function, inst.a, a->a);
+        if (IrInst* a = function.asInstOp(inst.a); a && a->cmd == IrCmd::TAG_VECTOR)
+            replace(function, inst.a, a->a);
 
-            if (IrInst* b = function.asInstOp(inst.b); b && b->cmd == IrCmd::TAG_VECTOR)
-                replace(function, inst.b, b->a);
-        }
+        if (IrInst* b = function.asInstOp(inst.b); b && b->cmd == IrCmd::TAG_VECTOR)
+            replace(function, inst.b, b->a);
         break;
 
     case IrCmd::UNM_VEC:
-        if (FFlag::LuauCodegenVectorTag2)
-        {
-            if (IrInst* a = function.asInstOp(inst.a); a && a->cmd == IrCmd::TAG_VECTOR)
-                replace(function, inst.a, a->a);
-        }
+        if (IrInst* a = function.asInstOp(inst.a); a && a->cmd == IrCmd::TAG_VECTOR)
+            replace(function, inst.a, a->a);
         break;
 
     case IrCmd::CHECK_NODE_NO_NEXT:
@@ -1442,9 +1436,7 @@ static void constPropInInst(ConstPropState& state, IrBuilder& build, IrFunction&
         state.invalidate(IrOp{inst.b.kind, vmRegOp(inst.b) + 0u});
         state.invalidate(IrOp{inst.b.kind, vmRegOp(inst.b) + 1u});
         state.invalidate(IrOp{inst.b.kind, vmRegOp(inst.b) + 2u});
-
-        if (DFFlag::LuauCodeGenCoverForgprepEffect)
-            state.invalidateUserCall();
+        state.invalidateUserCall();
         break;
     }
 }

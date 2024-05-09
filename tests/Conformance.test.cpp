@@ -32,15 +32,15 @@ void luaC_validate(lua_State* L);
 
 LUAU_FASTFLAG(DebugLuauAbortingChecks)
 LUAU_FASTINT(CodegenHeuristicsInstructionLimit)
-LUAU_FASTFLAG(LuauLoadExceptionSafe)
-LUAU_DYNAMIC_FASTFLAG(LuauDebugInfoDupArgLeftovers)
 LUAU_FASTFLAG(LuauCompileRepeatUntilSkippedLocals)
+LUAU_DYNAMIC_FASTFLAG(LuauFastCrossTableMove)
 
 static lua_CompileOptions defaultOptions()
 {
     lua_CompileOptions copts = {};
     copts.optimizationLevel = optimizationLevel;
     copts.debugLevel = 1;
+    copts.typeInfoLevel = 1;
 
     copts.vectorCtor = "vector";
     copts.vectorType = "vector";
@@ -331,6 +331,7 @@ static std::vector<Luau::CodeGen::FunctionBytecodeSummary> analyzeFile(const cha
     Luau::CompileOptions options;
     options.optimizationLevel = optimizationLevel;
     options.debugLevel = 1;
+    options.typeInfoLevel = 1;
 
     compileOrThrow(bcb, source, options);
 
@@ -409,6 +410,8 @@ TEST_CASE("Sort")
 
 TEST_CASE("Move")
 {
+    ScopedFastFlag luauFastCrossTableMove{DFFlag::LuauFastCrossTableMove, true};
+
     runConformance("move.lua");
 }
 
@@ -632,8 +635,6 @@ TEST_CASE("DateTime")
 
 TEST_CASE("Debug")
 {
-    ScopedFastFlag luauDebugInfoDupArgLeftovers{DFFlag::LuauDebugInfoDupArgLeftovers, true};
-
     runConformance("debug.lua");
 }
 
@@ -1825,6 +1826,18 @@ TEST_CASE("LightuserdataApi")
     globalState.reset();
 }
 
+TEST_CASE("DebugApi")
+{
+    StateRef globalState(luaL_newstate(), lua_close);
+    lua_State* L = globalState.get();
+
+    lua_pushnumber(L, 10);
+
+    lua_Debug ar;
+    CHECK(lua_getinfo(L, -1, "f", &ar) == 0);  // number is not a function
+    CHECK(lua_getinfo(L, -10, "f", &ar) == 0); // not on stack
+}
+
 TEST_CASE("Iter")
 {
     runConformance("iter.lua");
@@ -2146,8 +2159,6 @@ TEST_CASE("HugeFunctionLoadFailure")
     // luau_load.  This should require two "large" allocations:  One for the
     // code array and one for the constants array (k).  We run this test twice
     // and fail each of these two allocations.
-    ScopedFastFlag luauLoadExceptionSafe{FFlag::LuauLoadExceptionSafe, true};
-
     std::string source = makeHugeFunctionSource();
 
     static const size_t expectedTotalLargeAllocations = 2;
@@ -2155,8 +2166,7 @@ TEST_CASE("HugeFunctionLoadFailure")
     static size_t largeAllocationToFail = 0;
     static size_t largeAllocationCount = 0;
 
-    const auto testAllocate = [](void* ud, void* ptr, size_t osize, size_t nsize) -> void*
-    {
+    const auto testAllocate = [](void* ud, void* ptr, size_t osize, size_t nsize) -> void* {
         if (nsize == 0)
         {
             free(ptr);
@@ -2254,10 +2264,18 @@ TEST_CASE("IrInstructionLimit")
     REQUIRE(result == 0);
 
     Luau::CodeGen::CompilationStats nativeStats = {};
-    Luau::CodeGen::CodeGenCompilationResult nativeResult = Luau::CodeGen::compile(L, -1, Luau::CodeGen::CodeGen_ColdFunctions, &nativeStats);
+    Luau::CodeGen::CompilationResult nativeResult = Luau::CodeGen::compile(L, -1, Luau::CodeGen::CodeGen_ColdFunctions, &nativeStats);
 
     // Limit is not hit immediately, so with some functions compiled it should be a success
-    CHECK(nativeResult == Luau::CodeGen::CodeGenCompilationResult::CodeGenOverflowInstructionLimit);
+    CHECK(nativeResult.result == Luau::CodeGen::CodeGenCompilationResult::Success);
+
+    // But it has some failed functions
+    CHECK(nativeResult.hasErrors());
+    REQUIRE(!nativeResult.protoFailures.empty());
+
+    CHECK(nativeResult.protoFailures.front().result == Luau::CodeGen::CodeGenCompilationResult::CodeGenOverflowInstructionLimit);
+    CHECK(nativeResult.protoFailures.front().line != -1);
+    CHECK(nativeResult.protoFailures.front().debugname != "");
 
     // We should be able to compile at least one of our functions
     CHECK(nativeStats.functionsCompiled > 0);

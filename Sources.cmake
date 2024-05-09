@@ -107,6 +107,7 @@ target_sources(Luau.CodeGen PRIVATE
     CodeGen/src/CodeBlockUnwind.cpp
     CodeGen/src/CodeGen.cpp
     CodeGen/src/CodeGenAssembly.cpp
+    CodeGen/src/CodeGenContext.cpp
     CodeGen/src/CodeGenUtils.cpp
     CodeGen/src/CodeGenA64.cpp
     CodeGen/src/CodeGenX64.cpp
@@ -139,6 +140,7 @@ target_sources(Luau.CodeGen PRIVATE
 
     CodeGen/src/BitUtils.h
     CodeGen/src/ByteUtils.h
+    CodeGen/src/CodeGenContext.h
     CodeGen/src/CodeGenLower.h
     CodeGen/src/CodeGenUtils.h
     CodeGen/src/CodeGenA64.h
@@ -420,6 +422,7 @@ if(TARGET Luau.UnitTest)
         tests/Fixture.h
         tests/Frontend.test.cpp
         tests/InsertionOrderedMap.test.cpp
+        tests/Instantiation2.test.cpp
         tests/IostreamOptional.h
         tests/IrBuilder.test.cpp
         tests/IrCallWrapperX64.test.cpp
@@ -441,7 +444,6 @@ if(TARGET Luau.UnitTest)
         tests/ScopedFlags.h
         tests/Simplify.test.cpp
         tests/Set.test.cpp
-        tests/SharedCodeAllocator.test.cpp
         tests/StringUtils.test.cpp
         tests/Subtyping.test.cpp
         tests/Symbol.test.cpp
@@ -494,6 +496,7 @@ if(TARGET Luau.Conformance)
         tests/RegisterCallbacks.cpp
         tests/Conformance.test.cpp
         tests/IrLowering.test.cpp
+        tests/SharedCodeAllocator.test.cpp
         tests/main.cpp)
 endif()
 

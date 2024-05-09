@@ -1,6 +1,9 @@
 // This file is part of the Luau programming language and is licensed under MIT License; see LICENSE.txt for details
 #include "Luau/SharedCodeAllocator.h"
 
+#include "Luau/CodeAllocator.h"
+#include "Luau/CodeGenCommon.h"
+
 #include <algorithm>
 #include <string_view>
 #include <utility>
@@ -11,113 +14,70 @@ namespace CodeGen
 {
 
 
-
-NativeProto::NativeProto(uint32_t bytecodeId, NativeProtoExecDataPtr nativeExecData)
-    : bytecodeId{bytecodeId}
-    , nativeExecData{std::move(nativeExecData)}
-{
-}
-
-void NativeProto::setEntryOffset(uint32_t entryOffset) noexcept
-{
-    entryOffsetOrAddress = reinterpret_cast<const uint8_t*>(static_cast<uintptr_t>(entryOffset));
-}
-
-void NativeProto::assignToModule(NativeModule* nativeModule) noexcept
-{
-    getNativeProtoExecDataHeader(nativeExecData.get()).nativeModule = nativeModule;
-
-    entryOffsetOrAddress = nativeModule->getModuleBaseAddress() + reinterpret_cast<uintptr_t>(entryOffsetOrAddress);
-}
-
-[[nodiscard]] uint32_t NativeProto::getBytecodeId() const noexcept
-{
-    return bytecodeId;
-}
-
-[[nodiscard]] const uint8_t* NativeProto::getEntryAddress() const noexcept
-{
-    return entryOffsetOrAddress;
-}
-
-[[nodiscard]] const NativeProtoExecDataHeader& NativeProto::getNativeExecDataHeader() const noexcept
-{
-    return getNativeProtoExecDataHeader(nativeExecData.get());
-}
-
-[[nodiscard]] const uint32_t* NativeProto::getNonOwningPointerToInstructionOffsets() const noexcept
-{
-    return nativeExecData.get();
-}
-
-[[nodiscard]] const uint32_t* NativeProto::getOwningPointerToInstructionOffsets() const noexcept
-{
-    getNativeProtoExecDataHeader(nativeExecData.get()).nativeModule->addRef();
-    return nativeExecData.get();
-}
-
-void NativeProto::releaseOwningPointerToInstructionOffsets(const uint32_t* ownedInstructionOffsets) noexcept
-{
-    getNativeProtoExecDataHeader(ownedInstructionOffsets).nativeModule->release();
-}
-
-
 struct NativeProtoBytecodeIdEqual
 {
-    [[nodiscard]] bool operator()(const NativeProto& left, const NativeProto& right) const noexcept
+    [[nodiscard]] bool operator()(const NativeProtoExecDataPtr& left, const NativeProtoExecDataPtr& right) const noexcept
     {
-        return left.getBytecodeId() == right.getBytecodeId();
+        return getNativeProtoExecDataHeader(left.get()).bytecodeId == getNativeProtoExecDataHeader(right.get()).bytecodeId;
     }
 };
 
 struct NativeProtoBytecodeIdLess
 {
-    [[nodiscard]] bool operator()(const NativeProto& left, const NativeProto& right) const noexcept
+    [[nodiscard]] bool operator()(const NativeProtoExecDataPtr& left, const NativeProtoExecDataPtr& right) const noexcept
     {
-        return left.getBytecodeId() < right.getBytecodeId();
+        return getNativeProtoExecDataHeader(left.get()).bytecodeId < getNativeProtoExecDataHeader(right.get()).bytecodeId;
     }
 
-    [[nodiscard]] bool operator()(const NativeProto& left, uint32_t right) const noexcept
+    [[nodiscard]] bool operator()(const NativeProtoExecDataPtr& left, uint32_t right) const noexcept
     {
-        return left.getBytecodeId() < right;
+        return getNativeProtoExecDataHeader(left.get()).bytecodeId < right;
     }
 
-    [[nodiscard]] bool operator()(uint32_t left, const NativeProto& right) const noexcept
+    [[nodiscard]] bool operator()(uint32_t left, const NativeProtoExecDataPtr& right) const noexcept
     {
-        return left < right.getBytecodeId();
+        return left < getNativeProtoExecDataHeader(right.get()).bytecodeId;
     }
 };
 
-NativeModule::NativeModule(
-    SharedCodeAllocator* allocator, const ModuleId& moduleId, const uint8_t* moduleBaseAddress, std::vector<NativeProto> nativeProtos) noexcept
+NativeModule::NativeModule(SharedCodeAllocator* allocator, const std::optional<ModuleId>& moduleId, const uint8_t* moduleBaseAddress,
+    std::vector<NativeProtoExecDataPtr> nativeProtos) noexcept
     : allocator{allocator}
     , moduleId{moduleId}
     , moduleBaseAddress{moduleBaseAddress}
     , nativeProtos{std::move(nativeProtos)}
 {
-    LUAU_ASSERT(allocator != nullptr);
-    LUAU_ASSERT(moduleBaseAddress != nullptr);
+    CODEGEN_ASSERT(allocator != nullptr);
+    CODEGEN_ASSERT(moduleBaseAddress != nullptr);
 
     // Bind all of the NativeProtos to this module:
-    for (NativeProto& nativeProto : this->nativeProtos)
+    for (const NativeProtoExecDataPtr& nativeProto : this->nativeProtos)
     {
-        nativeProto.assignToModule(this);
+        NativeProtoExecDataHeader& header = getNativeProtoExecDataHeader(nativeProto.get());
+        header.nativeModule = this;
+        header.entryOffsetOrAddress = moduleBaseAddress + reinterpret_cast<uintptr_t>(header.entryOffsetOrAddress);
     }
 
     std::sort(this->nativeProtos.begin(), this->nativeProtos.end(), NativeProtoBytecodeIdLess{});
 
     // We should not have two NativeProtos for the same bytecode id:
-    LUAU_ASSERT(std::adjacent_find(this->nativeProtos.begin(), this->nativeProtos.end(), NativeProtoBytecodeIdEqual{}) == this->nativeProtos.end());
+    CODEGEN_ASSERT(
+        std::adjacent_find(this->nativeProtos.begin(), this->nativeProtos.end(), NativeProtoBytecodeIdEqual{}) == this->nativeProtos.end());
 }
 
 NativeModule::~NativeModule() noexcept
 {
-    LUAU_ASSERT(refcount == 0);
+    CODEGEN_ASSERT(refcount == 0);
 }
 
 size_t NativeModule::addRef() const noexcept
 {
     return refcount.fetch_add(1) + 1;
+}
+
+size_t NativeModule::addRefs(size_t count) const noexcept
+{
+    return refcount.fetch_add(count) + count;
 }
 
 size_t NativeModule::release() const noexcept
@@ -126,7 +86,7 @@ size_t NativeModule::release() const noexcept
     if (newRefcount != 0)
         return newRefcount;
 
-    allocator->eraseNativeModuleIfUnreferenced(moduleId);
+    allocator->eraseNativeModuleIfUnreferenced(*this);
 
     // NOTE:  *this may have been destroyed by the prior call, and must not be
     // accessed after this point.
@@ -138,24 +98,34 @@ size_t NativeModule::release() const noexcept
     return refcount;
 }
 
+[[nodiscard]] const std::optional<ModuleId>& NativeModule::getModuleId() const noexcept
+{
+    return moduleId;
+}
+
 [[nodiscard]] const uint8_t* NativeModule::getModuleBaseAddress() const noexcept
 {
     return moduleBaseAddress;
 }
 
-[[nodiscard]] const NativeProto* NativeModule::tryGetNativeProto(uint32_t bytecodeId) const noexcept
+[[nodiscard]] const uint32_t* NativeModule::tryGetNativeProto(uint32_t bytecodeId) const noexcept
 {
     const auto range = std::equal_range(nativeProtos.begin(), nativeProtos.end(), bytecodeId, NativeProtoBytecodeIdLess{});
     if (range.first == range.second)
         return nullptr;
 
-    LUAU_ASSERT(std::next(range.first) == range.second);
+    CODEGEN_ASSERT(std::next(range.first) == range.second);
 
-    return &*range.first;
+    return range.first->get();
+}
+
+[[nodiscard]] const std::vector<NativeProtoExecDataPtr>& NativeModule::getNativeProtos() const noexcept
+{
+    return nativeProtos;
 }
 
 
-NativeModuleRef::NativeModuleRef(NativeModule* nativeModule) noexcept
+NativeModuleRef::NativeModuleRef(const NativeModule* nativeModule) noexcept
     : nativeModule{nativeModule}
 {
     if (nativeModule != nullptr)
@@ -226,11 +196,17 @@ NativeModuleRef::operator bool() const noexcept
 }
 
 
+SharedCodeAllocator::SharedCodeAllocator(CodeAllocator* codeAllocator) noexcept
+    : codeAllocator{codeAllocator}
+{
+}
+
 SharedCodeAllocator::~SharedCodeAllocator() noexcept
 {
     // The allocator should not be destroyed until all outstanding references
     // have been released and all allocated modules have been destroyed.
-    LUAU_ASSERT(nativeModules.empty());
+    CODEGEN_ASSERT(identifiedModules.empty());
+    CODEGEN_ASSERT(anonymousModuleCount == 0);
 }
 
 [[nodiscard]] NativeModuleRef SharedCodeAllocator::tryGetNativeModule(const ModuleId& moduleId) const noexcept
@@ -240,45 +216,75 @@ SharedCodeAllocator::~SharedCodeAllocator() noexcept
     return tryGetNativeModuleWithLockHeld(moduleId);
 }
 
-NativeModuleRef SharedCodeAllocator::getOrInsertNativeModule(
-    const ModuleId& moduleId, std::vector<NativeProto> nativeProtos, const std::vector<uint8_t>& data, const std::vector<uint8_t>& code)
+std::pair<NativeModuleRef, bool> SharedCodeAllocator::getOrInsertNativeModule(const ModuleId& moduleId,
+    std::vector<NativeProtoExecDataPtr> nativeProtos, const uint8_t* data, size_t dataSize, const uint8_t* code, size_t codeSize)
 {
     std::unique_lock lock{mutex};
 
     if (NativeModuleRef existingModule = tryGetNativeModuleWithLockHeld(moduleId))
-        return existingModule;
+        return {std::move(existingModule), false};
 
-    // We simulate allocation until the backend allocator is integrated
+    uint8_t* nativeData = nullptr;
+    size_t sizeNativeData = 0;
+    uint8_t* codeStart = nullptr;
+    if (!codeAllocator->allocate(data, int(dataSize), code, int(codeSize), nativeData, sizeNativeData, codeStart))
+    {
+        return {};
+    }
 
-    std::unique_ptr<NativeModule>& nativeModule = nativeModules[moduleId];
-    nativeModule = std::make_unique<NativeModule>(this, moduleId, baseAddress, std::move(nativeProtos));
+    std::unique_ptr<NativeModule>& nativeModule = identifiedModules[moduleId];
+    nativeModule = std::make_unique<NativeModule>(this, moduleId, codeStart, std::move(nativeProtos));
 
-    baseAddress += data.size() + code.size();
-
-    return NativeModuleRef{nativeModule.get()};
+    return {NativeModuleRef{nativeModule.get()}, true};
 }
 
-void SharedCodeAllocator::eraseNativeModuleIfUnreferenced(const ModuleId& moduleId)
+NativeModuleRef SharedCodeAllocator::insertAnonymousNativeModule(
+    std::vector<NativeProtoExecDataPtr> nativeProtos, const uint8_t* data, size_t dataSize, const uint8_t* code, size_t codeSize)
 {
     std::unique_lock lock{mutex};
 
-    const auto it = nativeModules.find(moduleId);
-    if (it == nativeModules.end())
-        return;
+    uint8_t* nativeData = nullptr;
+    size_t sizeNativeData = 0;
+    uint8_t* codeStart = nullptr;
+    if (!codeAllocator->allocate(data, int(dataSize), code, int(codeSize), nativeData, sizeNativeData, codeStart))
+    {
+        return {};
+    }
+
+    NativeModuleRef nativeModuleRef{new NativeModule{this, std::nullopt, codeStart, std::move(nativeProtos)}};
+    ++anonymousModuleCount;
+
+    return nativeModuleRef;
+}
+
+void SharedCodeAllocator::eraseNativeModuleIfUnreferenced(const NativeModule& nativeModule)
+{
+    std::unique_lock lock{mutex};
 
     // It is possible that someone acquired a reference to the module between
     // the time that we called this function and the time that we acquired the
     // lock.  If so, that's okay.
-    if (it->second->getRefcount() != 0)
+    if (nativeModule.getRefcount() != 0)
         return;
 
-    nativeModules.erase(it);
+    if (const std::optional<ModuleId>& moduleId = nativeModule.getModuleId())
+    {
+        const auto it = identifiedModules.find(*moduleId);
+        CODEGEN_ASSERT(it != identifiedModules.end());
+
+        identifiedModules.erase(it);
+    }
+    else
+    {
+        CODEGEN_ASSERT(anonymousModuleCount.fetch_sub(1) != 0);
+        delete &nativeModule;
+    }
 }
 
 [[nodiscard]] NativeModuleRef SharedCodeAllocator::tryGetNativeModuleWithLockHeld(const ModuleId& moduleId) const noexcept
 {
-    const auto it = nativeModules.find(moduleId);
-    if (it == nativeModules.end())
+    const auto it = identifiedModules.find(moduleId);
+    if (it == identifiedModules.end())
         return NativeModuleRef{};
 
     return NativeModuleRef{it->second.get()};

@@ -216,6 +216,20 @@ struct NormalizedFunctionType
 struct NormalizedType;
 using NormalizedTyvars = std::unordered_map<TypeId, std::unique_ptr<NormalizedType>>;
 
+// Operations provided by `Normalizer` can have ternary results:
+//   1. The operation returned true.
+//   2. The operation returned false.
+//   3. They can hit resource limitations, which invalidates _all normalized types_.
+enum class NormalizationResult
+{
+    // The operation returned true or succeeded.
+    True,
+    // The operation returned false or failed.
+    False,
+    // Resource limits were hit, invalidating all normalized types.
+    HitLimits,
+};
+
 // A normalized type is either any, unknown, or one of the form P | T | F | G where
 // * P is a union of primitive types (including singletons, classes and the error type)
 // * T is a union of table types
@@ -269,6 +283,11 @@ struct NormalizedType
     // The generic/free part of the type.
     NormalizedTyvars tyvars;
 
+    // Free types, blocked types, and certain other types change shape as type
+    // inference is done. If we were to cache the normalization of these types,
+    // we'd be reusing bad, stale data.
+    bool isCacheable = true;
+
     NormalizedType(NotNull<BuiltinTypes> builtinTypes);
 
     NormalizedType() = delete;
@@ -316,7 +335,7 @@ struct NormalizedType
 
 class Normalizer
 {
-    std::unordered_map<TypeId, std::unique_ptr<NormalizedType>> cachedNormals;
+    std::unordered_map<TypeId, std::shared_ptr<NormalizedType>> cachedNormals;
     std::unordered_map<const TypeIds*, TypeId> cachedIntersections;
     std::unordered_map<const TypeIds*, TypeId> cachedUnions;
     std::unordered_map<const TypeIds*, std::unique_ptr<TypeIds>> cachedTypeIds;
@@ -341,7 +360,8 @@ public:
     Normalizer& operator=(Normalizer&) = delete;
 
     // If this returns null, the typechecker should emit a "too complex" error
-    const NormalizedType* normalize(TypeId ty);
+    const NormalizedType* DEPRECATED_normalize(TypeId ty);
+    std::shared_ptr<const NormalizedType> normalize(TypeId ty);
     void clearNormal(NormalizedType& norm);
 
     // ------- Cached TypeIds
@@ -366,8 +386,8 @@ public:
     void unionFunctions(NormalizedFunctionType& heress, const NormalizedFunctionType& theress);
     void unionTablesWithTable(TypeIds& heres, TypeId there);
     void unionTables(TypeIds& heres, const TypeIds& theres);
-    bool unionNormals(NormalizedType& here, const NormalizedType& there, int ignoreSmallerTyvars = -1);
-    bool unionNormalWithTy(NormalizedType& here, TypeId there, Set<TypeId>& seenSetTypes, int ignoreSmallerTyvars = -1);
+    NormalizationResult unionNormals(NormalizedType& here, const NormalizedType& there, int ignoreSmallerTyvars = -1);
+    NormalizationResult unionNormalWithTy(NormalizedType& here, TypeId there, Set<TypeId>& seenSetTypes, int ignoreSmallerTyvars = -1);
 
     // ------- Negations
     std::optional<NormalizedType> negateNormal(const NormalizedType& here);
@@ -375,6 +395,7 @@ public:
     TypeId negate(TypeId there);
     void subtractPrimitive(NormalizedType& here, TypeId ty);
     void subtractSingleton(NormalizedType& here, TypeId ty);
+    NormalizationResult intersectNormalWithNegationTy(TypeId toNegate, NormalizedType& intersect, bool useDeprecated = false);
 
     // ------- Normalizing intersections
     TypeId intersectionOfTops(TypeId here, TypeId there);
@@ -389,19 +410,19 @@ public:
     std::optional<TypeId> intersectionOfFunctions(TypeId here, TypeId there);
     void intersectFunctionsWithFunction(NormalizedFunctionType& heress, TypeId there);
     void intersectFunctions(NormalizedFunctionType& heress, const NormalizedFunctionType& theress);
-    bool intersectTyvarsWithTy(NormalizedTyvars& here, TypeId there, Set<TypeId>& seenSetTypes);
-    bool intersectNormals(NormalizedType& here, const NormalizedType& there, int ignoreSmallerTyvars = -1);
-    bool intersectNormalWithTy(NormalizedType& here, TypeId there, Set<TypeId>& seenSetTypes);
-    bool normalizeIntersections(const std::vector<TypeId>& intersections, NormalizedType& outType);
+    NormalizationResult intersectTyvarsWithTy(NormalizedTyvars& here, TypeId there, Set<TypeId>& seenSetTypes);
+    NormalizationResult intersectNormals(NormalizedType& here, const NormalizedType& there, int ignoreSmallerTyvars = -1);
+    NormalizationResult intersectNormalWithTy(NormalizedType& here, TypeId there, Set<TypeId>& seenSetTypes);
+    NormalizationResult normalizeIntersections(const std::vector<TypeId>& intersections, NormalizedType& outType);
 
     // Check for inhabitance
-    bool isInhabited(TypeId ty);
-    bool isInhabited(TypeId ty, Set<TypeId>& seen);
-    bool isInhabited(const NormalizedType* norm);
-    bool isInhabited(const NormalizedType* norm, Set<TypeId>& seen);
+    NormalizationResult isInhabited(TypeId ty);
+    NormalizationResult isInhabited(TypeId ty, Set<TypeId>& seen);
+    NormalizationResult isInhabited(const NormalizedType* norm);
+    NormalizationResult isInhabited(const NormalizedType* norm, Set<TypeId>& seen);
 
     // Check for intersections being inhabited
-    bool isIntersectionInhabited(TypeId left, TypeId right);
+    NormalizationResult isIntersectionInhabited(TypeId left, TypeId right);
 
     // -------- Convert back from a normalized type to a type
     TypeId typeFromNormal(const NormalizedType& norm);

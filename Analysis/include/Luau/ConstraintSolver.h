@@ -25,6 +25,8 @@ enum class ValueContext;
 
 struct DcrLogger;
 
+class AstExpr;
+
 // TypeId, TypePackId, or Constraint*. It is impossible to know which, but we
 // never dereference this pointer.
 using BlockedConstraintId = Variant<TypeId, TypePackId, const Constraint*>;
@@ -89,6 +91,9 @@ struct ConstraintSolver
     // A mapping from free types to the number of unresolved constraints that mention them.
     DenseHashMap<TypeId, size_t> unresolvedConstraints{{}};
 
+    // Irreducible/uninhabited type families or type pack families.
+    DenseHashSet<const void*> uninhabitedTypeFamilies{{}};
+
     // Recorded errors that take place within the solver.
     ErrorVec errors;
 
@@ -122,7 +127,6 @@ struct ConstraintSolver
     bool tryDispatch(const SubtypeConstraint& c, NotNull<const Constraint> constraint, bool force);
     bool tryDispatch(const PackSubtypeConstraint& c, NotNull<const Constraint> constraint, bool force);
     bool tryDispatch(const GeneralizationConstraint& c, NotNull<const Constraint> constraint, bool force);
-    bool tryDispatch(const InstantiationConstraint& c, NotNull<const Constraint> constraint, bool force);
     bool tryDispatch(const IterableConstraint& c, NotNull<const Constraint> constraint, bool force);
     bool tryDispatch(const NameConstraint& c, NotNull<const Constraint> constraint);
     bool tryDispatch(const TypeAliasExpansionConstraint& c, NotNull<const Constraint> constraint);
@@ -130,15 +134,20 @@ struct ConstraintSolver
     bool tryDispatch(const FunctionCheckConstraint& c, NotNull<const Constraint> constraint);
     bool tryDispatch(const PrimitiveTypeConstraint& c, NotNull<const Constraint> constraint);
     bool tryDispatch(const HasPropConstraint& c, NotNull<const Constraint> constraint);
-    bool tryDispatch(const SetPropConstraint& c, NotNull<const Constraint> constraint, bool force);
+    bool tryDispatch(const SetPropConstraint& c, NotNull<const Constraint> constraint);
 
-    bool tryDispatchHasIndexer(int& recursionDepth, NotNull<const Constraint> constraint, TypeId subjectType, TypeId indexType, TypeId resultType);
+    bool tryDispatchHasIndexer(
+        int& recursionDepth, NotNull<const Constraint> constraint, TypeId subjectType, TypeId indexType, TypeId resultType, Set<TypeId>& seen);
     bool tryDispatch(const HasIndexerConstraint& c, NotNull<const Constraint> constraint);
 
+    std::pair<bool, std::optional<TypeId>> tryDispatchSetIndexer(
+        NotNull<const Constraint> constraint, TypeId subjectType, TypeId indexType, TypeId propType, bool expandFreeTypeBounds);
     bool tryDispatch(const SetIndexerConstraint& c, NotNull<const Constraint> constraint, bool force);
-    bool tryDispatch(const SingletonOrTopTypeConstraint& c, NotNull<const Constraint> constraint);
+
+    bool tryDispatchUnpack1(NotNull<const Constraint> constraint, TypeId resultType, TypeId sourceType, bool resultIsLValue);
     bool tryDispatch(const UnpackConstraint& c, NotNull<const Constraint> constraint);
-    bool tryDispatch(const SetOpConstraint& c, NotNull<const Constraint> constraint, bool force);
+    bool tryDispatch(const Unpack1Constraint& c, NotNull<const Constraint> constraint);
+
     bool tryDispatch(const ReduceConstraint& c, NotNull<const Constraint> constraint, bool force);
     bool tryDispatch(const ReducePackConstraint& c, NotNull<const Constraint> constraint, bool force);
     bool tryDispatch(const EqualityConstraint& c, NotNull<const Constraint> constraint, bool force);
@@ -151,10 +160,10 @@ struct ConstraintSolver
     bool tryDispatchIterableFunction(
         TypeId nextTy, TypeId tableTy, TypeId firstIndexTy, const IterableConstraint& c, NotNull<const Constraint> constraint, bool force);
 
-    std::pair<std::vector<TypeId>, std::optional<TypeId>> lookupTableProp(
-        TypeId subjectType, const std::string& propName, ValueContext context, bool inConditional = false, bool suppressSimplification = false);
-    std::pair<std::vector<TypeId>, std::optional<TypeId>> lookupTableProp(
-        TypeId subjectType, const std::string& propName, ValueContext context, bool inConditional, bool suppressSimplification, DenseHashSet<TypeId>& seen);
+    std::pair<std::vector<TypeId>, std::optional<TypeId>> lookupTableProp(NotNull<const Constraint> constraint, TypeId subjectType,
+        const std::string& propName, ValueContext context, bool inConditional = false, bool suppressSimplification = false);
+    std::pair<std::vector<TypeId>, std::optional<TypeId>> lookupTableProp(NotNull<const Constraint> constraint, TypeId subjectType,
+        const std::string& propName, ValueContext context, bool inConditional, bool suppressSimplification, DenseHashSet<TypeId>& seen);
 
     void block(NotNull<const Constraint> target, NotNull<const Constraint> constraint);
     /**
@@ -241,17 +250,6 @@ struct ConstraintSolver
      * @returns whether or not it is unsafe to replace the free type by one of its bounds
      */
     bool hasUnresolvedConstraints(TypeId ty);
-
-    /**
-     * Creates a new Unifier and performs a single unification operation.
-     *
-     * @param subType the sub-type to unify.
-     * @param superType the super-type to unify.
-     * @returns true if the unification succeeded.  False if the unification was
-     * too complex.
-     */
-    template <typename TID>
-    bool unify(NotNull<Scope> scope, Location location, TID subType, TID superType);
 
     /** Attempts to unify subTy with superTy.  If doing so would require unifying
      * BlockedTypes, fail and block the constraint on those BlockedTypes.

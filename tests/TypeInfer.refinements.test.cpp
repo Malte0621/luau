@@ -338,7 +338,7 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "refine_unknown_to_table_then_test_a_prop")
     )");
 
     if (FFlag::DebugLuauDeferredConstraintResolution)
-            LUAU_REQUIRE_NO_ERRORS(result);
+        LUAU_REQUIRE_NO_ERRORS(result);
     else
     {
         LUAU_REQUIRE_ERROR_COUNT(2, result);
@@ -592,7 +592,10 @@ TEST_CASE_FIXTURE(Fixture, "lvalue_is_not_nil")
     LUAU_REQUIRE_NO_ERRORS(result);
 
     CHECK_EQ(toString(requireTypeAtPosition({3, 28})), "number | string");    // a ~= nil
-    CHECK_EQ(toString(requireTypeAtPosition({5, 28})), "(number | string)?"); // a == nil
+    if (FFlag::DebugLuauDeferredConstraintResolution)
+        CHECK_EQ(toString(requireTypeAtPosition({5, 28})), "nil"); // a == nil :)
+    else
+        CHECK_EQ(toString(requireTypeAtPosition({5, 28})), "(number | string)?"); // a == nil
 }
 
 TEST_CASE_FIXTURE(Fixture, "free_type_is_equal_to_an_lvalue")
@@ -2150,5 +2153,23 @@ TEST_CASE_FIXTURE(RefinementClassFixture, "mutate_prop_of_some_refined_symbol_2"
     LUAU_REQUIRE_NO_ERRORS(result);
 }
 
+TEST_CASE_FIXTURE(BuiltinsFixture, "ensure_t_after_return_references_all_reachable_points")
+{
+    CheckResult result = check(R"(
+        local t = {}
+
+        local function f(k: string)
+            if t[k] ~= nil then
+                return
+            end
+
+            t[k] = 5
+        end
+    )");
+
+    LUAU_REQUIRE_NO_ERRORS(result);
+
+    CHECK_EQ("{ [string]: number }", toString(requireTypeAtPosition({8, 12}), {true}));
+}
 
 TEST_SUITE_END();
