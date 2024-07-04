@@ -658,7 +658,7 @@ static void enumtable(EnumContext* ctx, Table* h)
     size_t size = sizeof(Table) + (h->node == &luaH_dummynode ? 0 : sizenode(h) * sizeof(LuaNode)) + h->sizearray * sizeof(TValue);
 
     // Provide a name for a special registry table
-    enumnode(ctx, obj2gco(h), size, h == hvalue(registry(ctx->L)) ? "registry" : NULL);
+    enumnode(ctx, obj2gco(h), size, h == hvalue(lua_registry(ctx->L)) ? "registry" : NULL);
 
     if (h->node != &luaH_dummynode)
     {

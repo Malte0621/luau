@@ -701,7 +701,7 @@ static void markroot(lua_State* L)
     markobject(g, g->mainthread);
     // make global table be traversed before main stack
     markobject(g, g->mainthread->gt);
-    markvalue(g, registry(L));
+    markvalue(g, lua_registry(L));
     markmt(g);
     g->gcstate = GCSpropagate;
 }

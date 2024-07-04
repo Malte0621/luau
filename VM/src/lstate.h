@@ -7,7 +7,7 @@
 #include <map>
 
 // registry
-#define registry(L) (&L->global->registry)
+#define lua_registry(L) (&L->global->registry)
 
 // extra stack space to handle TM calls and some other extras
 #define EXTRA_STACK 5

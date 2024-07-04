@@ -55,7 +55,7 @@ static void f_luaopen(lua_State* L, void* ud)
     global_State* g = L->global;
     stack_init(L, L);                             // init stack
     L->gt = luaH_new(L, 0, 2);                    // table of globals
-    sethvalue(L, registry(L), luaH_new(L, 0, 2)); // registry
+    sethvalue(L, lua_registry(L), luaH_new(L, 0, 2)); // registry
     luaS_resize(L, LUA_MINSTRTABSIZE);            // initial size of string table
     luaT_init(L);
     luaS_fix(luaS_newliteral(L, LUA_MEMERRMSG)); // pin to make sure we can always throw this error
@@ -190,7 +190,7 @@ lua_State* lua_newstate(lua_Alloc f, void* ud)
     g->strt.nuse = 0;
     g->strt.hash = NULL;
     setnilvalue(&g->pseudotemp);
-    setnilvalue(registry(L));
+    setnilvalue(lua_registry(L));
     g->gcstate = GCSpause;
     g->gray = NULL;
     g->grayagain = NULL;

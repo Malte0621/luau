@@ -78,7 +78,7 @@ static LUAU_NOINLINE TValue* pseudo2addr(lua_State* L, int idx)
     switch (idx)
     { // pseudo-indices
     case LUA_REGISTRYINDEX:
-        return registry(L);
+        return lua_registry(L);
     case LUA_ENVIRONINDEX:
     {
         sethvalue(L, &L->global->pseudotemp, getcurrenv(L));
@@ -767,7 +767,7 @@ void lua_setreadonly(lua_State* L, int objindex, int enabled)
     const TValue* o = index2addr(L, objindex);
     api_check(L, ttistable(o));
     Table* t = hvalue(o);
-    api_check(L, t != hvalue(registry(L)));
+    api_check(L, t != hvalue(lua_registry(L)));
     t->readonly = bool(enabled);
 }
 
@@ -1378,7 +1378,7 @@ int lua_ref(lua_State* L, int idx)
     StkId p = index2addr(L, idx);
     if (!ttisnil(p))
     {
-        Table* reg = hvalue(registry(L));
+        Table* reg = hvalue(lua_registry(L));
 
         if (g->registryfree != 0)
         { // reuse existing slot
@@ -1405,7 +1405,7 @@ void lua_unref(lua_State* L, int ref)
         return;
 
     global_State* g = L->global;
-    Table* reg = hvalue(registry(L));
+    Table* reg = hvalue(lua_registry(L));
     TValue* slot = luaH_setnum(L, reg, ref);
     setnvalue(slot, g->registryfree); // NB: no barrier needed because value isn't collectable
     g->registryfree = ref;
