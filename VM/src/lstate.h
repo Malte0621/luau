@@ -240,6 +240,7 @@ struct taskSleepInfo
     double startTime;
     double wakeUpTime;
     CallType callType;
+    unsigned int args = 0;
     bool sendTimeTaken = true;
 };
 
@@ -289,6 +290,7 @@ struct lua_State
     int cachedslot;    // when table operations or INDEX/NEWINDEX is invoked from Luau, what is the expected slot for lookup?
 
 	int identity = 2; /* The current luastate's identity (for lrbx's security stuff) */
+    void* required = nullptr; // required modules
     taskSchedulerInfo* taskScheduler; // task scheduler addon
     lua_State* parent = nullptr; // parent state (for reverse traversal)
     unsigned char storage = 0; // storage for custom shared data
