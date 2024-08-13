@@ -5,6 +5,7 @@
 #include "Luau/Def.h"
 #include "Luau/Common.h"
 #include "Luau/Error.h"
+#include "Luau/TimeTrace.h"
 
 #include <optional>
 
@@ -136,6 +137,8 @@ bool DfgScope::canUpdateDefinition(DefId def, const std::string& key) const
 
 DataFlowGraph DataFlowGraphBuilder::build(AstStatBlock* block, NotNull<InternalErrorReporter> handle)
 {
+    LUAU_TIMETRACE_SCOPE("DataFlowGraphBuilder::build", "Typechecking");
+
     LUAU_ASSERT(FFlag::DebugLuauDeferredConstraintResolution);
 
     DataFlowGraphBuilder builder;
@@ -201,7 +204,8 @@ void DataFlowGraphBuilder::joinBindings(DfgScope* p, const DfgScope& a, const Df
 
 void DataFlowGraphBuilder::joinProps(DfgScope* result, const DfgScope& a, const DfgScope& b)
 {
-    auto phinodify = [this](DfgScope* scope, const auto& a, const auto& b, DefId parent) mutable {
+    auto phinodify = [this](DfgScope* scope, const auto& a, const auto& b, DefId parent) mutable
+    {
         auto& p = scope->props[parent];
         for (const auto& [k, defA] : a)
         {
@@ -370,6 +374,8 @@ ControlFlow DataFlowGraphBuilder::visit(DfgScope* scope, AstStat* s)
         return visit(scope, l);
     else if (auto t = s->as<AstStatTypeAlias>())
         return visit(scope, t);
+    else if (auto f = s->as<AstStatTypeFunction>())
+        return visit(scope, f);
     else if (auto d = s->as<AstStatDeclareGlobal>())
         return visit(scope, d);
     else if (auto d = s->as<AstStatDeclareFunction>())
@@ -564,15 +570,8 @@ ControlFlow DataFlowGraphBuilder::visit(DfgScope* scope, AstStatAssign* a)
 
 ControlFlow DataFlowGraphBuilder::visit(DfgScope* scope, AstStatCompoundAssign* c)
 {
-    // TODO: This needs revisiting because this is incorrect. The `c->var` part is both being read and written to,
-    // but the `c->var` only has one pointer address, so we need to come up with a way to store both.
-    // For now, it's not important because we don't have type states, but it is going to be important, e.g.
-    //
-    // local a = 5 -- a-1
-    // a += 5      -- a-2 = a-1 + 5
-    // We can't just visit `c->var` as a rvalue and then separately traverse `c->var` as an lvalue, since that's O(n^2).
-    DefId def = visitExpr(scope, c->value).def;
-    visitLValue(scope, c->var, def, /* isCompoundAssignment */ true);
+    (void) visitExpr(scope, c->value);
+    (void) visitExpr(scope, c->var);
 
     return ControlFlow::None;
 }
@@ -624,6 +623,14 @@ ControlFlow DataFlowGraphBuilder::visit(DfgScope* scope, AstStatTypeAlias* t)
     visitGenerics(unreachable, t->generics);
     visitGenericPacks(unreachable, t->genericPacks);
     visitType(unreachable, t->type);
+
+    return ControlFlow::None;
+}
+
+ControlFlow DataFlowGraphBuilder::visit(DfgScope* scope, AstStatTypeFunction* f)
+{
+    DfgScope* unreachable = childScope(scope);
+    visitExpr(unreachable, f->body);
 
     return ControlFlow::None;
 }
@@ -688,7 +695,8 @@ DataFlowResult DataFlowGraphBuilder::visitExpr(DfgScope* scope, AstExpr* e)
         return {NotNull{*def}, key ? *key : nullptr};
     }
 
-    auto go = [&]() -> DataFlowResult {
+    auto go = [&]() -> DataFlowResult
+    {
         if (auto g = e->as<AstExprGroup>())
             return visitExpr(scope, g);
         else if (auto c = e->as<AstExprConstantNil>())
@@ -763,7 +771,8 @@ DataFlowResult DataFlowGraphBuilder::visitExpr(DfgScope* scope, AstExprCall* c)
     for (AstExpr* arg : c->args)
         visitExpr(scope, arg);
 
-    return {defArena->freshCell(), nullptr};
+    // calls should be treated as subscripted.
+    return {defArena->freshCell(/* subscripted */ true), nullptr};
 }
 
 DataFlowResult DataFlowGraphBuilder::visitExpr(DfgScope* scope, AstExprIndexName* i)
@@ -904,13 +913,14 @@ DataFlowResult DataFlowGraphBuilder::visitExpr(DfgScope* scope, AstExprError* er
     return {defArena->freshCell(), nullptr};
 }
 
-void DataFlowGraphBuilder::visitLValue(DfgScope* scope, AstExpr* e, DefId incomingDef, bool isCompoundAssignment)
+void DataFlowGraphBuilder::visitLValue(DfgScope* scope, AstExpr* e, DefId incomingDef)
 {
-    auto go = [&]() {
+    auto go = [&]()
+    {
         if (auto l = e->as<AstExprLocal>())
-            return visitLValue(scope, l, incomingDef, isCompoundAssignment);
+            return visitLValue(scope, l, incomingDef);
         else if (auto g = e->as<AstExprGlobal>())
-            return visitLValue(scope, g, incomingDef, isCompoundAssignment);
+            return visitLValue(scope, g, incomingDef);
         else if (auto i = e->as<AstExprIndexName>())
             return visitLValue(scope, i, incomingDef);
         else if (auto i = e->as<AstExprIndexExpr>())
@@ -924,15 +934,8 @@ void DataFlowGraphBuilder::visitLValue(DfgScope* scope, AstExpr* e, DefId incomi
     graph.astDefs[e] = go();
 }
 
-DefId DataFlowGraphBuilder::visitLValue(DfgScope* scope, AstExprLocal* l, DefId incomingDef, bool isCompoundAssignment)
+DefId DataFlowGraphBuilder::visitLValue(DfgScope* scope, AstExprLocal* l, DefId incomingDef)
 {
-    // We need to keep the previous def around for a compound assignment.
-    if (isCompoundAssignment)
-    {
-        DefId def = lookup(scope, l->local);
-        graph.compoundAssignDefs[l] = def;
-    }
-
     // In order to avoid alias tracking, we need to clip the reference to the parent def.
     if (scope->canUpdateDefinition(l->local))
     {
@@ -945,15 +948,8 @@ DefId DataFlowGraphBuilder::visitLValue(DfgScope* scope, AstExprLocal* l, DefId 
         return visitExpr(scope, static_cast<AstExpr*>(l)).def;
 }
 
-DefId DataFlowGraphBuilder::visitLValue(DfgScope* scope, AstExprGlobal* g, DefId incomingDef, bool isCompoundAssignment)
+DefId DataFlowGraphBuilder::visitLValue(DfgScope* scope, AstExprGlobal* g, DefId incomingDef)
 {
-    // We need to keep the previous def around for a compound assignment.
-    if (isCompoundAssignment)
-    {
-        DefId def = lookup(scope, g->name);
-        graph.compoundAssignDefs[g] = def;
-    }
-
     // In order to avoid alias tracking, we need to clip the reference to the parent def.
     if (scope->canUpdateDefinition(g->name))
     {
