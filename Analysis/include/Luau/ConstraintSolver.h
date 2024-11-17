@@ -3,7 +3,9 @@
 #pragma once
 
 #include "Luau/Constraint.h"
+#include "Luau/DataFlowGraph.h"
 #include "Luau/DenseHash.h"
+#include "Luau/EqSatSimplification.h"
 #include "Luau/Error.h"
 #include "Luau/Location.h"
 #include "Luau/Module.h"
@@ -12,6 +14,7 @@
 #include "Luau/ToString.h"
 #include "Luau/Type.h"
 #include "Luau/TypeCheckLimits.h"
+#include "Luau/TypeFunction.h"
 #include "Luau/TypeFwd.h"
 #include "Luau/Variant.h"
 
@@ -62,10 +65,15 @@ struct ConstraintSolver
     NotNull<BuiltinTypes> builtinTypes;
     InternalErrorReporter iceReporter;
     NotNull<Normalizer> normalizer;
+    NotNull<Simplifier> simplifier;
+    NotNull<TypeFunctionRuntime> typeFunctionRuntime;
     // The entire set of constraints that the solver is trying to resolve.
     std::vector<NotNull<Constraint>> constraints;
     NotNull<Scope> rootScope;
     ModuleName currentModuleName;
+
+    // The dataflow graph of the program, used in constraint generation and for magic functions.
+    NotNull<const DataFlowGraph> dfg;
 
     // Constraints that the solver has generated, rather than sourcing from the
     // scope tree.
@@ -111,12 +119,15 @@ struct ConstraintSolver
 
     explicit ConstraintSolver(
         NotNull<Normalizer> normalizer,
+        NotNull<Simplifier> simplifier,
+        NotNull<TypeFunctionRuntime> typeFunctionRuntime,
         NotNull<Scope> rootScope,
         std::vector<NotNull<Constraint>> constraints,
         ModuleName moduleName,
         NotNull<ModuleResolver> moduleResolver,
         std::vector<RequireCycle> requireCycles,
         DcrLogger* logger,
+        NotNull<const DataFlowGraph> dfg,
         TypeCheckLimits limits
     );
 
@@ -164,9 +175,9 @@ public:
      */
     bool tryDispatch(NotNull<const Constraint> c, bool force);
 
-    bool tryDispatch(const SubtypeConstraint& c, NotNull<const Constraint> constraint, bool force);
-    bool tryDispatch(const PackSubtypeConstraint& c, NotNull<const Constraint> constraint, bool force);
-    bool tryDispatch(const GeneralizationConstraint& c, NotNull<const Constraint> constraint, bool force);
+    bool tryDispatch(const SubtypeConstraint& c, NotNull<const Constraint> constraint);
+    bool tryDispatch(const PackSubtypeConstraint& c, NotNull<const Constraint> constraint);
+    bool tryDispatch(const GeneralizationConstraint& c, NotNull<const Constraint> constraint);
     bool tryDispatch(const IterableConstraint& c, NotNull<const Constraint> constraint, bool force);
     bool tryDispatch(const NameConstraint& c, NotNull<const Constraint> constraint);
     bool tryDispatch(const TypeAliasExpansionConstraint& c, NotNull<const Constraint> constraint);
@@ -191,14 +202,14 @@ public:
     bool tryDispatch(const UnpackConstraint& c, NotNull<const Constraint> constraint);
     bool tryDispatch(const ReduceConstraint& c, NotNull<const Constraint> constraint, bool force);
     bool tryDispatch(const ReducePackConstraint& c, NotNull<const Constraint> constraint, bool force);
-    bool tryDispatch(const EqualityConstraint& c, NotNull<const Constraint> constraint, bool force);
+    bool tryDispatch(const EqualityConstraint& c, NotNull<const Constraint> constraint);
 
     // for a, ... in some_table do
     // also handles __iter metamethod
     bool tryDispatchIterableTable(TypeId iteratorTy, const IterableConstraint& c, NotNull<const Constraint> constraint, bool force);
 
     // for a, ... in next_function, t, ... do
-    bool tryDispatchIterableFunction(TypeId nextTy, TypeId tableTy, const IterableConstraint& c, NotNull<const Constraint> constraint, bool force);
+    bool tryDispatchIterableFunction(TypeId nextTy, TypeId tableTy, const IterableConstraint& c, NotNull<const Constraint> constraint);
 
     std::pair<std::vector<TypeId>, std::optional<TypeId>> lookupTableProp(
         NotNull<const Constraint> constraint,
@@ -278,18 +289,18 @@ public:
     /**
      * @returns true if the TypeId is in a blocked state.
      */
-    bool isBlocked(TypeId ty);
+    bool isBlocked(TypeId ty) const;
 
     /**
      * @returns true if the TypePackId is in a blocked state.
      */
-    bool isBlocked(TypePackId tp);
+    bool isBlocked(TypePackId tp) const;
 
     /**
      * Returns whether the constraint is blocked on anything.
      * @param constraint the constraint to check.
      */
-    bool isBlocked(NotNull<const Constraint> constraint);
+    bool isBlocked(NotNull<const Constraint> constraint) const;
 
     /** Pushes a new solver constraint to the solver.
      * @param cv the body of the constraint.
@@ -376,13 +387,17 @@ public:
      **/
     void reproduceConstraints(NotNull<Scope> scope, const Location& location, const Substitution& subst);
 
+    TypeId simplifyIntersection(NotNull<Scope> scope, Location location, TypeId left, TypeId right);
+    TypeId simplifyIntersection(NotNull<Scope> scope, Location location, std::set<TypeId> parts);
+    TypeId simplifyUnion(NotNull<Scope> scope, Location location, TypeId left, TypeId right);
+
     TypeId errorRecoveryType() const;
     TypePackId errorRecoveryTypePack() const;
 
     TypePackId anyifyModuleReturnTypePackGenerics(TypePackId tp);
 
-    void throwTimeLimitError();
-    void throwUserCancelError();
+    void throwTimeLimitError() const;
+    void throwUserCancelError() const;
 
     ToStringOptions opts;
 };

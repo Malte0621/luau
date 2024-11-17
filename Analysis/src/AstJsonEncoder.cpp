@@ -8,8 +8,6 @@
 
 #include <math.h>
 
-LUAU_FASTFLAG(LuauDeclarationExtraPropData)
-
 namespace Luau
 {
 
@@ -427,6 +425,7 @@ struct AstJsonEncoder : public AstVisitor
             "AstExprFunction",
             [&]()
             {
+                PROP(attributes);
                 PROP(generics);
                 PROP(genericPacks);
                 if (node->self)
@@ -883,7 +882,7 @@ struct AstJsonEncoder : public AstVisitor
                 PROP(name);
                 PROP(generics);
                 PROP(genericPacks);
-                PROP(type);
+                write("value", node->type);
                 PROP(exported);
             }
         );
@@ -896,21 +895,13 @@ struct AstJsonEncoder : public AstVisitor
             "AstStatDeclareFunction",
             [&]()
             {
-                // TODO: attributes
+                PROP(attributes);
                 PROP(name);
-
-                if (FFlag::LuauDeclarationExtraPropData)
-                    PROP(nameLocation);
-
+                PROP(nameLocation);
                 PROP(params);
-
-                if (FFlag::LuauDeclarationExtraPropData)
-                {
-                    PROP(paramNames);
-                    PROP(vararg);
-                    PROP(varargLocation);
-                }
-
+                PROP(paramNames);
+                PROP(vararg);
+                PROP(varargLocation);
                 PROP(retTypes);
                 PROP(generics);
                 PROP(genericPacks);
@@ -926,10 +917,7 @@ struct AstJsonEncoder : public AstVisitor
             [&]()
             {
                 PROP(name);
-
-                if (FFlag::LuauDeclarationExtraPropData)
-                    PROP(nameLocation);
-
+                PROP(nameLocation);
                 PROP(type);
             }
         );
@@ -940,16 +928,10 @@ struct AstJsonEncoder : public AstVisitor
         writeRaw("{");
         bool c = pushComma();
         write("name", prop.name);
-
-        if (FFlag::LuauDeclarationExtraPropData)
-            write("nameLocation", prop.nameLocation);
-
+        write("nameLocation", prop.nameLocation);
         writeType("AstDeclaredClassProp");
         write("luauType", prop.ty);
-
-        if (FFlag::LuauDeclarationExtraPropData)
-            write("location", prop.location);
-
+        write("location", prop.location);
         popComma(c);
         writeRaw("}");
     }
@@ -1061,6 +1043,7 @@ struct AstJsonEncoder : public AstVisitor
             "AstTypeFunction",
             [&]()
             {
+                PROP(attributes);
                 PROP(generics);
                 PROP(genericPacks);
                 PROP(argTypes);
@@ -1151,6 +1134,29 @@ struct AstJsonEncoder : public AstVisitor
             [&]()
             {
                 PROP(genericName);
+            }
+        );
+    }
+
+    void write(AstAttr::Type type)
+    {
+        switch (type)
+        {
+        case AstAttr::Type::Checked:
+            return writeString("checked");
+        case AstAttr::Type::Native:
+            return writeString("native");
+        }
+    }
+
+    void write(class AstAttr* node)
+    {
+        writeNode(
+            node,
+            "AstAttr",
+            [&]()
+            {
+                write("name", node->type);
             }
         );
     }

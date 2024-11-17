@@ -50,7 +50,7 @@ REPL_CLI_SOURCES=CLI/FileUtils.cpp CLI/Flags.cpp CLI/Profiler.cpp CLI/Coverage.c
 REPL_CLI_OBJECTS=$(REPL_CLI_SOURCES:%=$(BUILD)/%.o)
 REPL_CLI_TARGET=$(BUILD)/luau
 
-ANALYZE_CLI_SOURCES=CLI/FileUtils.cpp CLI/Flags.cpp CLI/Analyze.cpp
+ANALYZE_CLI_SOURCES=CLI/FileUtils.cpp CLI/Flags.cpp CLI/Require.cpp CLI/Analyze.cpp
 ANALYZE_CLI_OBJECTS=$(ANALYZE_CLI_SOURCES:%=$(BUILD)/%.o)
 ANALYZE_CLI_TARGET=$(BUILD)/luau-analyze
 
@@ -82,8 +82,10 @@ LDFLAGS=
 
 # some gcc versions treat var in `if (type var = val)` as unused
 # some gcc versions treat variables used in constexpr if blocks as unused
+# some gcc versions warn maybe uninitalized on optional<std::string> members on structs
 ifeq ($(findstring g++,$(shell $(CXX) --version)),g++)
 	CXXFLAGS+=-Wno-unused
+	CXXFLAGS+=-Wno-maybe-uninitialized
 endif
 
 # enabled in CI; we should be warning free on our main compiler versions but don't guarantee being warning free everywhere
@@ -142,7 +144,7 @@ endif
 $(AST_OBJECTS): CXXFLAGS+=-std=c++17 -ICommon/include -IAst/include
 $(COMPILER_OBJECTS): CXXFLAGS+=-std=c++17 -ICompiler/include -ICommon/include -IAst/include
 $(CONFIG_OBJECTS): CXXFLAGS+=-std=c++17 -IConfig/include -ICommon/include -IAst/include
-$(ANALYSIS_OBJECTS): CXXFLAGS+=-std=c++17 -ICommon/include -IAst/include -IAnalysis/include -IEqSat/include -IConfig/include
+$(ANALYSIS_OBJECTS): CXXFLAGS+=-std=c++17 -ICommon/include -IAst/include -IAnalysis/include -IEqSat/include -IConfig/include -ICompiler/include -IVM/include
 $(EQSAT_OBJECTS): CXXFLAGS+=-std=c++17 -ICommon/include -IEqSat/include
 $(CODEGEN_OBJECTS): CXXFLAGS+=-std=c++17 -ICommon/include -ICodeGen/include -IVM/include -IVM/src # Code generation needs VM internals
 $(VM_OBJECTS): CXXFLAGS+=-std=c++11 -ICommon/include -IVM/include
@@ -181,8 +183,7 @@ coverage: $(TESTS_TARGET) $(COMPILE_CLI_TARGET)
 	mv default.profraw tests.profraw
 	$(TESTS_TARGET) --fflags=true
 	mv default.profraw tests-flags.profraw
-	# new solver is expected to fail tests at the moment, remove '!' once tests are fixed and this starts to fail
-	! $(TESTS_TARGET) --fflags=true,DebugLuauDeferredConstraintResolution=true
+	$(TESTS_TARGET) --fflags=true,DebugLuauDeferredConstraintResolution=true
 	mv default.profraw tests-dcr.profraw
 	$(TESTS_TARGET) -ts=Conformance --codegen
 	mv default.profraw codegen.profraw
@@ -228,7 +229,7 @@ luau-tests: $(TESTS_TARGET)
 # executable targets
 $(TESTS_TARGET): $(TESTS_OBJECTS) $(ANALYSIS_TARGET) $(EQSAT_TARGET) $(COMPILER_TARGET) $(CONFIG_TARGET) $(AST_TARGET) $(CODEGEN_TARGET) $(VM_TARGET) $(ISOCLINE_TARGET)
 $(REPL_CLI_TARGET): $(REPL_CLI_OBJECTS) $(COMPILER_TARGET) $(CONFIG_TARGET) $(AST_TARGET) $(CODEGEN_TARGET) $(VM_TARGET) $(ISOCLINE_TARGET)
-$(ANALYZE_CLI_TARGET): $(ANALYZE_CLI_OBJECTS) $(ANALYSIS_TARGET) $(EQSAT_TARGET) $(AST_TARGET) $(CONFIG_TARGET)
+$(ANALYZE_CLI_TARGET): $(ANALYZE_CLI_OBJECTS) $(ANALYSIS_TARGET) $(EQSAT_TARGET) $(AST_TARGET) $(CONFIG_TARGET) $(COMPILER_TARGET) $(VM_TARGET)
 $(COMPILE_CLI_TARGET): $(COMPILE_CLI_OBJECTS) $(COMPILER_TARGET) $(AST_TARGET) $(CODEGEN_TARGET) $(VM_TARGET)
 $(BYTECODE_CLI_TARGET): $(BYTECODE_CLI_OBJECTS) $(COMPILER_TARGET) $(AST_TARGET) $(CODEGEN_TARGET) $(VM_TARGET)
 

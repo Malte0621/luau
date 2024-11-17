@@ -9,6 +9,7 @@
 #include "Luau/Scope.h"
 #include "Luau/TypeArena.h"
 #include "Luau/AnyTypeSummary.h"
+#include "Luau/DataFlowGraph.h"
 
 #include <memory>
 #include <vector>
@@ -66,6 +67,9 @@ struct RequireCycle
 struct Module
 {
     ~Module();
+
+    // TODO: Clip this when we clip FFlagLuauSolverV2
+    bool checkedInNewSolver = false;
 
     ModuleName name;
     std::string humanReadableName;
@@ -131,6 +135,9 @@ struct Module
 
     TypePackId returnType = nullptr;
     std::unordered_map<Name, TypeFun> exportedTypeBindings;
+    // We also need to keep DFG data alive between runs
+    std::shared_ptr<DataFlowGraph> dataFlowGraph = nullptr;
+    std::vector<std::unique_ptr<DfgScope>> dfgScopes;
 
     bool hasModuleScope() const;
     ScopePtr getModuleScope() const;

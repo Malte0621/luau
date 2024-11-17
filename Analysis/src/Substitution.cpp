@@ -9,9 +9,8 @@
 #include <stdexcept>
 
 LUAU_FASTINTVARIABLE(LuauTarjanChildLimit, 10000)
-LUAU_FASTFLAG(DebugLuauDeferredConstraintResolution);
+LUAU_FASTFLAG(LuauSolverV2);
 LUAU_FASTINTVARIABLE(LuauTarjanPreallocationSize, 256);
-LUAU_FASTFLAG(LuauReusableSubstitutions)
 
 namespace Luau
 {
@@ -47,6 +46,11 @@ static TypeId shallowClone(TypeId ty, TypeArena& dest, const TxnLog* log, bool a
             return dest.addType(std::move(clone));
         }
         else if constexpr (std::is_same_v<T, AnyType>)
+        {
+            LUAU_ASSERT(ty->persistent);
+            return ty;
+        }
+        else if constexpr (std::is_same_v<T, NoRefineType>)
         {
             LUAU_ASSERT(ty->persistent);
             return ty;
@@ -128,7 +132,7 @@ static TypeId shallowClone(TypeId ty, TypeArena& dest, const TxnLog* log, bool a
             return dest.addType(NegationType{a.ty});
         else if constexpr (std::is_same_v<T, TypeFunctionInstanceType>)
         {
-            TypeFunctionInstanceType clone{a.function, a.typeArguments, a.packArguments, a.userFuncName, a.userFuncBody};
+            TypeFunctionInstanceType clone{a.function, a.typeArguments, a.packArguments, a.userFuncName, a.userFuncData};
             return dest.addType(std::move(clone));
         }
         else
@@ -148,8 +152,8 @@ static TypeId shallowClone(TypeId ty, TypeArena& dest, const TxnLog* log, bool a
 }
 
 Tarjan::Tarjan()
-    : typeToIndex(nullptr, FFlag::LuauReusableSubstitutions ? FInt::LuauTarjanPreallocationSize : 0)
-    , packToIndex(nullptr, FFlag::LuauReusableSubstitutions ? FInt::LuauTarjanPreallocationSize : 0)
+    : typeToIndex(nullptr, FInt::LuauTarjanPreallocationSize)
+    , packToIndex(nullptr, FInt::LuauTarjanPreallocationSize)
 {
     nodes.reserve(FInt::LuauTarjanPreallocationSize);
     stack.reserve(FInt::LuauTarjanPreallocationSize);
@@ -183,7 +187,7 @@ void Tarjan::visitChildren(TypeId ty, int index)
         LUAU_ASSERT(!ttv->boundTo);
         for (const auto& [name, prop] : ttv->props)
         {
-            if (FFlag::DebugLuauDeferredConstraintResolution)
+            if (FFlag::LuauSolverV2)
             {
                 visitChild(prop.readTy);
                 visitChild(prop.writeTy);
@@ -452,28 +456,17 @@ TarjanResult Tarjan::visitRoot(TypePackId tp)
 
 void Tarjan::clearTarjan(const TxnLog* log)
 {
-    if (FFlag::LuauReusableSubstitutions)
-    {
-        typeToIndex.clear(~0u);
-        packToIndex.clear(~0u);
-    }
-    else
-    {
-        typeToIndex.clear();
-        packToIndex.clear();
-    }
+    typeToIndex.clear(~0u);
+    packToIndex.clear(~0u);
 
     nodes.clear();
 
     stack.clear();
 
-    if (FFlag::LuauReusableSubstitutions)
-    {
-        childCount = 0;
-        // childLimit setting stays the same
+    childCount = 0;
+    // childLimit setting stays the same
 
-        this->log = log;
-    }
+    this->log = log;
 
     edgesTy.clear();
     edgesTp.clear();
@@ -629,8 +622,6 @@ std::optional<TypePackId> Substitution::substitute(TypePackId tp)
 
 void Substitution::resetState(const TxnLog* log, TypeArena* arena)
 {
-    LUAU_ASSERT(FFlag::LuauReusableSubstitutions);
-
     clearTarjan(log);
 
     this->arena = arena;
@@ -754,7 +745,7 @@ void Substitution::replaceChildren(TypeId ty)
         LUAU_ASSERT(!ttv->boundTo);
         for (auto& [name, prop] : ttv->props)
         {
-            if (FFlag::DebugLuauDeferredConstraintResolution)
+            if (FFlag::LuauSolverV2)
             {
                 if (prop.readTy)
                     prop.readTy = replace(prop.readTy);

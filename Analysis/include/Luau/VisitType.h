@@ -11,7 +11,7 @@
 
 LUAU_FASTINT(LuauVisitRecursionLimit)
 LUAU_FASTFLAG(LuauBoundLazyTypes2)
-LUAU_FASTFLAG(DebugLuauDeferredConstraintResolution)
+LUAU_FASTFLAG(LuauSolverV2)
 
 namespace Luau
 {
@@ -133,6 +133,10 @@ struct GenericTypeVisitor
     {
         return visit(ty);
     }
+    virtual bool visit(TypeId ty, const NoRefineType& nrt)
+    {
+        return visit(ty);
+    }
     virtual bool visit(TypeId ty, const UnknownType& utv)
     {
         return visit(ty);
@@ -226,12 +230,12 @@ struct GenericTypeVisitor
         }
         else if (auto ftv = get<FreeType>(ty))
         {
-            if (FFlag::DebugLuauDeferredConstraintResolution)
+            if (FFlag::LuauSolverV2)
             {
                 if (visit(ty, *ftv))
                 {
                     // TODO: Replace these if statements with assert()s when we
-                    // delete FFlag::DebugLuauDeferredConstraintResolution.
+                    // delete FFlag::LuauSolverV2.
                     //
                     // When the old solver is used, these pointers are always
                     // unused. When the new solver is used, they are never null.
@@ -276,7 +280,7 @@ struct GenericTypeVisitor
                 {
                     for (auto& [_name, prop] : ttv->props)
                     {
-                        if (FFlag::DebugLuauDeferredConstraintResolution)
+                        if (FFlag::LuauSolverV2)
                         {
                             if (auto ty = prop.readTy)
                                 traverse(*ty);
@@ -314,7 +318,7 @@ struct GenericTypeVisitor
             {
                 for (const auto& [name, prop] : ctv->props)
                 {
-                    if (FFlag::DebugLuauDeferredConstraintResolution)
+                    if (FFlag::LuauSolverV2)
                     {
                         if (auto ty = prop.readTy)
                             traverse(*ty);
@@ -345,6 +349,8 @@ struct GenericTypeVisitor
         }
         else if (auto atv = get<AnyType>(ty))
             visit(ty, *atv);
+        else if (auto nrt = get<NoRefineType>(ty))
+            visit(ty, *nrt);
         else if (auto utv = get<UnionType>(ty))
         {
             if (visit(ty, *utv))

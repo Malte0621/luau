@@ -21,9 +21,8 @@ LUAU_FASTINT(LuauCompileInlineThresholdMaxBoost)
 LUAU_FASTINT(LuauCompileLoopUnrollThreshold)
 LUAU_FASTINT(LuauCompileLoopUnrollThresholdMaxBoost)
 LUAU_FASTINT(LuauRecursionLimit)
-
-LUAU_FASTFLAG(LuauCompileUserdataInfo)
-LUAU_FASTFLAG(LuauCompileFastcall3)
+LUAU_FASTFLAG(LuauUserDefinedTypeFunctionsSyntax2)
+LUAU_FASTFLAG(LuauCompileVectorTypeInfo)
 
 using namespace Luau;
 
@@ -96,6 +95,8 @@ TEST_CASE("BytecodeIsStable")
     // Note: these aren't strictly bound to specific bytecode versions, but must monotonically increase to keep backwards compat
     CHECK(LBF_VECTOR == 54);
     CHECK(LBF_TOSTRING == 63);
+    CHECK(LBF_BUFFER_WRITEF64 == 77);
+    CHECK(LBF_VECTOR_MAX == 88);
 
     // Bytecode capture type (serialized & in-memory)
     CHECK(LCT_UPVAL == 2); // bytecode v1
@@ -2799,6 +2800,16 @@ TEST_CASE("TypeAliasing")
     CHECK_NOTHROW(Luau::compileOrThrow(bcb, "type A = number local a: A = 1", options, parseOptions));
 }
 
+TEST_CASE("TypeFunction")
+{
+    ScopedFastFlag sff{FFlag::LuauUserDefinedTypeFunctionsSyntax2, true};
+
+    Luau::BytecodeBuilder bcb;
+    Luau::CompileOptions options;
+    Luau::ParseOptions parseOptions;
+    CHECK_NOTHROW(Luau::compileOrThrow(bcb, "type function a() return types.any end", options, parseOptions));
+}
+
 TEST_CASE("DebugLineInfo")
 {
     Luau::BytecodeBuilder bcb;
@@ -3330,8 +3341,6 @@ RETURN R0 0
 
 TEST_CASE("DebugTypes")
 {
-    ScopedFastFlag luauCompileUserdataInfo{FFlag::LuauCompileUserdataInfo, true};
-
     const char* source = R"(
 local up: number = 2
 
@@ -3591,8 +3600,6 @@ RETURN R1 -1
 
 TEST_CASE("Fastcall3")
 {
-    ScopedFastFlag luauCompileFastcall3{FFlag::LuauCompileFastcall3, true};
-
     CHECK_EQ(
         "\n" + compileFunction0(R"(
 local a, b, c = ...
@@ -4898,8 +4905,6 @@ L0: RETURN R0 -1
 
 TEST_CASE("VectorFastCall3")
 {
-    ScopedFastFlag luauCompileFastcall3{FFlag::LuauCompileFastcall3, true};
-
     const char* source = R"(
 local a, b, c = ...
 return Vector3.new(a, b, c)
@@ -8411,6 +8416,21 @@ end
 0: function(userdata, vector)
 1: function(userdata, any)
 2: function(userdata, number)
+)"
+    );
+}
+
+TEST_CASE("BuiltinTypeVector")
+{
+    ScopedFastFlag luauCompileVectorTypeInfo{FFlag::LuauCompileVectorTypeInfo, true};
+
+    CHECK_EQ(
+        "\n" + compileTypeTable(R"(
+function myfunc(test: Instance, pos: vector)
+end
+)"),
+        R"(
+0: function(userdata, vector)
 )"
     );
 }

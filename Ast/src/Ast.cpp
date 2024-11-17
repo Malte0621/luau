@@ -3,7 +3,7 @@
 
 #include "Luau/Common.h"
 
-LUAU_FASTFLAG(LuauNativeAttribute);
+LUAU_FASTFLAG(LuauNativeAttribute)
 
 namespace Luau
 {
@@ -85,6 +85,11 @@ AstExprConstantString::AstExprConstantString(const Location& location, const Ast
 void AstExprConstantString::visit(AstVisitor* visitor)
 {
     visitor->visit(this);
+}
+
+bool AstExprConstantString::isQuoted() const
+{
+    return quoteStyle == QuoteStyle::QuotedSimple || quoteStyle == QuoteStyle::QuotedRaw;
 }
 
 AstExprLocal::AstExprLocal(const Location& location, AstLocal* local, bool upvalue)
@@ -755,11 +760,18 @@ void AstStatTypeAlias::visit(AstVisitor* visitor)
     }
 }
 
-AstStatTypeFunction::AstStatTypeFunction(const Location& location, const AstName& name, const Location& nameLocation, AstExprFunction* body)
+AstStatTypeFunction::AstStatTypeFunction(
+    const Location& location,
+    const AstName& name,
+    const Location& nameLocation,
+    AstExprFunction* body,
+    bool exported
+)
     : AstStat(ClassIndex(), location)
     , name(name)
     , nameLocation(nameLocation)
     , body(body)
+    , exported(exported)
 {
 }
 
@@ -1139,6 +1151,14 @@ AstTypePackGeneric::AstTypePackGeneric(const Location& location, AstName name)
 void AstTypePackGeneric::visit(AstVisitor* visitor)
 {
     visitor->visit(this);
+}
+
+bool isLValue(const AstExpr* expr)
+{
+    return expr->is<AstExprLocal>()
+        || expr->is<AstExprGlobal>()
+        || expr->is<AstExprIndexName>()
+        || expr->is<AstExprIndexExpr>();
 }
 
 AstName getIdentifier(AstExpr* node)

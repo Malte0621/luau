@@ -11,8 +11,6 @@
 
 #include <algorithm>
 
-LUAU_FASTFLAGVARIABLE(LuauCodegenFastcall3, false)
-
 namespace Luau
 {
 namespace CodeGen
@@ -516,6 +514,40 @@ static void applyBuiltinCall(int bfid, BytecodeTypes& types)
         types.result = LBC_TYPE_TABLE;
         types.a = LBC_TYPE_TABLE;
         types.b = LBC_TYPE_TABLE;
+        break;
+    case LBF_VECTOR_MAGNITUDE:
+        types.result = LBC_TYPE_NUMBER;
+        types.a = LBC_TYPE_VECTOR;
+        break;
+    case LBF_VECTOR_NORMALIZE:
+        types.result = LBC_TYPE_VECTOR;
+        types.a = LBC_TYPE_VECTOR;
+        break;
+    case LBF_VECTOR_CROSS:
+        types.result = LBC_TYPE_VECTOR;
+        types.a = LBC_TYPE_VECTOR;
+        types.b = LBC_TYPE_VECTOR;
+        break;
+    case LBF_VECTOR_DOT:
+        types.result = LBC_TYPE_NUMBER;
+        types.a = LBC_TYPE_VECTOR;
+        types.b = LBC_TYPE_VECTOR;
+        break;
+    case LBF_VECTOR_FLOOR:
+    case LBF_VECTOR_CEIL:
+    case LBF_VECTOR_ABS:
+    case LBF_VECTOR_SIGN:
+    case LBF_VECTOR_CLAMP:
+        types.result = LBC_TYPE_VECTOR;
+        types.a = LBC_TYPE_VECTOR;
+        types.b = LBC_TYPE_VECTOR;
+        break;
+    case LBF_VECTOR_MIN:
+    case LBF_VECTOR_MAX:
+        types.result = LBC_TYPE_VECTOR;
+        types.a = LBC_TYPE_VECTOR;
+        types.b = LBC_TYPE_VECTOR;
+        types.c = LBC_TYPE_VECTOR; // We can mark optional arguments
         break;
     }
 }
@@ -1101,8 +1133,6 @@ void analyzeBytecodeTypes(IrFunction& function, const HostIrHooks& hostHooks)
             }
             case LOP_FASTCALL3:
             {
-                CODEGEN_ASSERT(FFlag::LuauCodegenFastcall3);
-
                 int bfid = LUAU_INSN_A(*pc);
                 int skip = LUAU_INSN_C(*pc);
                 int aux = pc[1];

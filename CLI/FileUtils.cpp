@@ -57,12 +57,6 @@ bool isAbsolutePath(std::string_view path)
 #endif
 }
 
-bool isExplicitlyRelative(std::string_view path)
-{
-    return (path == ".") || (path == "..") || (path.size() >= 2 && path[0] == '.' && path[1] == '/') ||
-           (path.size() >= 3 && path[0] == '.' && path[1] == '.' && path[2] == '/');
-}
-
 std::optional<std::string> getCurrentWorkingDirectory()
 {
     // 2^17 - derived from the Windows path length limit
@@ -114,6 +108,7 @@ std::string resolvePath(std::string_view path, std::string_view baseFilePath)
     // - if relative (when path and baseFilePath are both relative), resolvedPathPrefix remains empty
     // - if absolute (if either path or baseFilePath are absolute), resolvedPathPrefix is "C:\", "/", etc.
     std::string resolvedPathPrefix;
+    bool isResolvedPathRelative = false;
 
     if (isAbsolutePath(path))
     {
@@ -124,19 +119,19 @@ std::string resolvePath(std::string_view path, std::string_view baseFilePath)
     }
     else
     {
-        pathComponents = splitPath(path);
+        size_t afterPrefix = baseFilePath.find_first_of("\\/") + 1;
+        baseFilePathComponents = splitPath(baseFilePath.substr(afterPrefix));
         if (isAbsolutePath(baseFilePath))
         {
             // path is relative and baseFilePath is absolute, we use baseFilePath's prefix
-            size_t afterPrefix = baseFilePath.find_first_of("\\/") + 1;
             resolvedPathPrefix = baseFilePath.substr(0, afterPrefix);
-            baseFilePathComponents = splitPath(baseFilePath.substr(afterPrefix));
         }
         else
         {
             // path and baseFilePath are both relative, we do not set a prefix (resolved path will be relative)
-            baseFilePathComponents = splitPath(baseFilePath);
+            isResolvedPathRelative = true;
         }
+        pathComponents = splitPath(path);
     }
 
     // Remove filename from components
@@ -151,7 +146,7 @@ std::string resolvePath(std::string_view path, std::string_view baseFilePath)
         {
             if (baseFilePathComponents.empty())
             {
-                if (resolvedPathPrefix.empty()) // only when final resolved path will be relative
+                if (isResolvedPathRelative)
                     numPrependedParents++;      // "../" will later be added to the beginning of the resolved path
             }
             else if (baseFilePathComponents.back() != "..")
@@ -165,13 +160,25 @@ std::string resolvePath(std::string_view path, std::string_view baseFilePath)
         }
     }
 
+    // Create resolved path prefix for relative paths
+    if (isResolvedPathRelative)
+    {
+        if (numPrependedParents > 0)
+        {
+            resolvedPathPrefix.reserve(numPrependedParents * 3);
+            for (int i = 0; i < numPrependedParents; i++)
+            {
+                resolvedPathPrefix += "../";
+            }
+        }
+        else
+        {
+            resolvedPathPrefix = "./";
+        }
+    }
+
     // Join baseFilePathComponents to form the resolved path
     std::string resolvedPath = resolvedPathPrefix;
-    // Only when resolvedPath will be relative
-    for (int i = 0; i < numPrependedParents; i++)
-    {
-        resolvedPath += "../";
-    }
     for (auto iter = baseFilePathComponents.begin(); iter != baseFilePathComponents.end(); ++iter)
     {
         if (iter != baseFilePathComponents.begin())
@@ -185,6 +192,16 @@ std::string resolvePath(std::string_view path, std::string_view baseFilePath)
         resolvedPath.pop_back();
     }
     return resolvedPath;
+}
+
+bool hasFileExtension(std::string_view name, const std::vector<std::string>& extensions)
+{
+    for (const std::string& extension : extensions)
+    {
+        if (name.size() >= extension.size() && name.substr(name.size() - extension.size()) == extension)
+            return true;
+    }
+    return false;
 }
 
 std::optional<std::string> readFile(const std::string& name)
@@ -352,6 +369,20 @@ bool traverseDirectory(const std::string& path, const std::function<void(const s
     return traverseDirectoryRec(path, callback);
 }
 #endif
+
+bool isFile(const std::string& path)
+{
+#ifdef _WIN32
+    DWORD fileAttributes = GetFileAttributesW(fromUtf8(path).c_str());
+    if (fileAttributes == INVALID_FILE_ATTRIBUTES)
+        return false;
+    return (fileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0;
+#else
+    struct stat st = {};
+    lstat(path.c_str(), &st);
+    return (st.st_mode & S_IFMT) == S_IFREG;
+#endif
+}
 
 bool isDirectory(const std::string& path)
 {

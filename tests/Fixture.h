@@ -20,8 +20,18 @@
 
 #include "doctest.h"
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <optional>
+#include <vector>
+
+LUAU_FASTFLAG(DebugLuauFreezeArena)
+LUAU_FASTFLAG(DebugLuauForceAllNewSolverTests)
+
+#define DOES_NOT_PASS_NEW_SOLVER_GUARD_IMPL(line) \
+    ScopedFastFlag sff_##line{FFlag::LuauSolverV2, FFlag::DebugLuauForceAllNewSolverTests};
+
+#define DOES_NOT_PASS_NEW_SOLVER_GUARD() DOES_NOT_PASS_NEW_SOLVER_GUARD_IMPL(__LINE__)
 
 namespace Luau
 {
@@ -61,13 +71,13 @@ struct TestConfigResolver : ConfigResolver
 
 struct Fixture
 {
-    explicit Fixture(bool freeze = true, bool prepareAutocomplete = false);
+    explicit Fixture(bool prepareAutocomplete = false);
     ~Fixture();
 
     // Throws Luau::ParseErrors if the parse fails.
     AstStatBlock* parse(const std::string& source, const ParseOptions& parseOptions = {});
-    CheckResult check(Mode mode, const std::string& source);
-    CheckResult check(const std::string& source);
+    CheckResult check(Mode mode, const std::string& source, std::optional<FrontendOptions> = std::nullopt);
+    CheckResult check(const std::string& source, std::optional<FrontendOptions> = std::nullopt);
 
     LintResult lint(const std::string& source, const std::optional<LintOptions>& lintOptions = {});
     LintResult lintModule(const ModuleName& moduleName, const std::optional<LintOptions>& lintOptions = {});
@@ -98,7 +108,14 @@ struct Fixture
     TypeId requireTypeAlias(const std::string& name);
     TypeId requireExportedType(const ModuleName& moduleName, const std::string& name);
 
-    ScopedFastFlag sff_DebugLuauFreezeArena;
+    // While most flags can be flipped inside the unit test, some code changes affect the state that is part of Fixture initialization
+    // Most often those are changes related to builtin type definitions.
+    // In that case, flag can be forced to 'true' using the example below:
+    // ScopedFastFlag sff_LuauExampleFlagDefinition{FFlag::LuauExampleFlagDefinition, true};
+
+    // Arena freezing marks the `TypeArena`'s underlying memory as read-only, raising an access violation whenever you mutate it.
+    // This is useful for tracking down violations of Luau's memory model.
+    ScopedFastFlag sff_DebugLuauFreezeArena{FFlag::DebugLuauFreezeArena, true};
 
     TestFileResolver fileResolver;
     TestConfigResolver configResolver;
@@ -127,8 +144,11 @@ struct Fixture
 
 struct BuiltinsFixture : Fixture
 {
-    BuiltinsFixture(bool freeze = true, bool prepareAutocomplete = false);
+    BuiltinsFixture(bool prepareAutocomplete = false);
 };
+
+std::optional<std::string> pathExprToModuleName(const ModuleName& currentModuleName, const std::vector<std::string_view>& segments);
+std::optional<std::string> pathExprToModuleName(const ModuleName& currentModuleName, const AstExpr& pathExpr);
 
 ModuleName fromString(std::string_view name);
 
@@ -273,3 +293,37 @@ using DifferFixtureWithBuiltins = DifferFixtureGeneric<BuiltinsFixture>;
     } while (false)
 
 #define LUAU_CHECK_NO_ERRORS(result) LUAU_CHECK_ERROR_COUNT(0, result)
+
+#define LUAU_CHECK_HAS_KEY(map, key) \
+    do \
+    { \
+        auto&& _m = (map); \
+        auto&& _k = (key); \
+        const size_t count = _m.count(_k); \
+        CHECK_MESSAGE(count, "Map should have key \"" << _k << "\""); \
+        if (!count) \
+        { \
+            MESSAGE("Keys: (count " << _m.size() << ")"); \
+            for (const auto& [k, v] : _m) \
+            { \
+                MESSAGE("\tkey: " << k); \
+            } \
+        } \
+    } while (false)
+
+#define LUAU_CHECK_HAS_NO_KEY(map, key) \
+    do \
+    { \
+        auto&& _m = (map); \
+        auto&& _k = (key); \
+        const size_t count = _m.count(_k); \
+        CHECK_MESSAGE(!count, "Map should not have key \"" << _k << "\""); \
+        if (count) \
+        { \
+            MESSAGE("Keys: (count " << _m.size() << ")"); \
+            for (const auto& [k, v] : _m) \
+            { \
+                MESSAGE("\tkey: " << k); \
+            } \
+        } \
+    } while (false)

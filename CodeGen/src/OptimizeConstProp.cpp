@@ -17,9 +17,7 @@
 LUAU_FASTINTVARIABLE(LuauCodeGenMinLinearBlockPath, 3)
 LUAU_FASTINTVARIABLE(LuauCodeGenReuseSlotLimit, 64)
 LUAU_FASTINTVARIABLE(LuauCodeGenReuseUdataTagLimit, 64)
-LUAU_FASTFLAGVARIABLE(DebugLuauAbortingChecks, false)
-LUAU_FASTFLAG(LuauCodegenFastcall3)
-LUAU_FASTFLAG(LuauCodegenMathSign)
+LUAU_FASTFLAGVARIABLE(DebugLuauAbortingChecks)
 
 namespace Luau
 {
@@ -538,6 +536,17 @@ static void handleBuiltinEffects(ConstPropState& state, LuauBuiltinFunction bfid
     case LBF_BUFFER_WRITEF32:
     case LBF_BUFFER_READF64:
     case LBF_BUFFER_WRITEF64:
+    case LBF_VECTOR_MAGNITUDE:
+    case LBF_VECTOR_NORMALIZE:
+    case LBF_VECTOR_CROSS:
+    case LBF_VECTOR_DOT:
+    case LBF_VECTOR_FLOOR:
+    case LBF_VECTOR_CEIL:
+    case LBF_VECTOR_ABS:
+    case LBF_VECTOR_SIGN:
+    case LBF_VECTOR_CLAMP:
+    case LBF_VECTOR_MIN:
+    case LBF_VECTOR_MAX:
         break;
     case LBF_TABLE_INSERT:
         state.invalidateHeap();
@@ -759,7 +768,8 @@ static void constPropInInst(ConstPropState& state, IrBuilder& build, IrFunction&
             if (tag == LUA_TBOOLEAN &&
                 (value.kind == IrOpKind::Inst || (value.kind == IrOpKind::Constant && function.constOp(value).kind == IrConstKind::Int)))
                 canSplitTvalueStore = true;
-            else if (tag == LUA_TNUMBER && (value.kind == IrOpKind::Inst || (value.kind == IrOpKind::Constant && function.constOp(value).kind == IrConstKind::Double)))
+            else if (tag == LUA_TNUMBER &&
+                     (value.kind == IrOpKind::Inst || (value.kind == IrOpKind::Constant && function.constOp(value).kind == IrConstKind::Double)))
                 canSplitTvalueStore = true;
             else if (tag != 0xff && isGCO(tag) && value.kind == IrOpKind::Inst)
                 canSplitTvalueStore = true;
@@ -1119,7 +1129,7 @@ static void constPropInInst(ConstPropState& state, IrBuilder& build, IrFunction&
     {
         LuauBuiltinFunction bfid = LuauBuiltinFunction(function.uintOp(inst.a));
         int firstReturnReg = vmRegOp(inst.b);
-        int nresults = function.intOp(FFlag::LuauCodegenFastcall3 ? inst.d : inst.f);
+        int nresults = function.intOp(inst.d);
 
         // TODO: FASTCALL is more restrictive than INVOKE_FASTCALL; we should either determine the exact semantics, or rework it
         handleBuiltinEffects(state, bfid, firstReturnReg, nresults);
@@ -1133,19 +1143,13 @@ static void constPropInInst(ConstPropState& state, IrBuilder& build, IrFunction&
             if (nresults > 1)
                 state.updateTag(IrOp{IrOpKind::VmReg, uint8_t(firstReturnReg + 1)}, LUA_TNUMBER);
             break;
-        case LBF_MATH_SIGN:
-            CODEGEN_ASSERT(!FFlag::LuauCodegenMathSign);
-            state.updateTag(IrOp{IrOpKind::VmReg, uint8_t(firstReturnReg)}, LUA_TNUMBER);
-            break;
         default:
             break;
         }
         break;
     }
     case IrCmd::INVOKE_FASTCALL:
-        handleBuiltinEffects(
-            state, LuauBuiltinFunction(function.uintOp(inst.a)), vmRegOp(inst.b), function.intOp(FFlag::LuauCodegenFastcall3 ? inst.g : inst.f)
-        );
+        handleBuiltinEffects(state, LuauBuiltinFunction(function.uintOp(inst.a)), vmRegOp(inst.b), function.intOp(inst.g));
         break;
 
         // These instructions don't have an effect on register/memory state we are tracking
@@ -1339,6 +1343,7 @@ static void constPropInInst(ConstPropState& state, IrBuilder& build, IrFunction&
     case IrCmd::SUB_VEC:
     case IrCmd::MUL_VEC:
     case IrCmd::DIV_VEC:
+    case IrCmd::DOT_VEC:
         if (IrInst* a = function.asInstOp(inst.a); a && a->cmd == IrCmd::TAG_VECTOR)
             replace(function, inst.a, a->a);
 

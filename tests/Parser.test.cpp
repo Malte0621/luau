@@ -3,6 +3,7 @@
 
 #include "AstQueryDsl.h"
 #include "Fixture.h"
+#include "Luau/Common.h"
 #include "ScopedFlags.h"
 
 #include "doctest.h"
@@ -11,14 +12,14 @@
 
 using namespace Luau;
 
-LUAU_FASTFLAG(LuauLexerLookaheadRemembersBraceType);
-LUAU_FASTINT(LuauRecursionLimit);
-LUAU_FASTINT(LuauTypeLengthLimit);
-LUAU_FASTINT(LuauParseErrorLimit);
-LUAU_FASTFLAG(DebugLuauDeferredConstraintResolution);
-LUAU_FASTFLAG(LuauAttributeSyntaxFunExpr);
-LUAU_FASTFLAG(LuauDeclarationExtraPropData);
-LUAU_FASTFLAG(LuauUserDefinedTypeFunctions);
+LUAU_FASTINT(LuauRecursionLimit)
+LUAU_FASTINT(LuauTypeLengthLimit)
+LUAU_FASTINT(LuauParseErrorLimit)
+LUAU_FASTFLAG(LuauSolverV2)
+LUAU_FASTFLAG(LuauAttributeSyntaxFunExpr)
+LUAU_FASTFLAG(LuauUserDefinedTypeFunctionsSyntax2)
+LUAU_FASTFLAG(LuauUserDefinedTypeFunParseExport)
+LUAU_FASTFLAG(LuauAllowComplexTypesInGenericParams)
 
 namespace
 {
@@ -1192,9 +1193,7 @@ until false
 
 TEST_CASE_FIXTURE(Fixture, "parse_nesting_based_end_detection_local_function")
 {
-    ScopedFastFlag sff[] = {
-        {FFlag::DebugLuauDeferredConstraintResolution, false},
-    };
+    DOES_NOT_PASS_NEW_SOLVER_GUARD();
 
     try
     {
@@ -1229,9 +1228,7 @@ end
 
 TEST_CASE_FIXTURE(Fixture, "parse_nesting_based_end_detection_failsafe_earlier")
 {
-    ScopedFastFlag sff[] = {
-        {FFlag::DebugLuauDeferredConstraintResolution, false},
-    };
+    DOES_NOT_PASS_NEW_SOLVER_GUARD();
 
     try
     {
@@ -1918,8 +1915,6 @@ function func():end
 
 TEST_CASE_FIXTURE(Fixture, "parse_declarations")
 {
-    ScopedFastFlag luauDeclarationExtraPropData{FFlag::LuauDeclarationExtraPropData, true};
-
     AstStatBlock* stat = parseEx(R"(
         declare foo: number
         declare function bar(x: number): string
@@ -1957,8 +1952,6 @@ TEST_CASE_FIXTURE(Fixture, "parse_declarations")
 
 TEST_CASE_FIXTURE(Fixture, "parse_class_declarations")
 {
-    ScopedFastFlag luauDeclarationExtraPropData{FFlag::LuauDeclarationExtraPropData, true};
-
     AstStatBlock* stat = parseEx(R"(
         declare class Foo
             prop: number
@@ -2385,11 +2378,16 @@ TEST_CASE_FIXTURE(Fixture, "invalid_type_forms")
 
 TEST_CASE_FIXTURE(Fixture, "parse_user_defined_type_functions")
 {
-    ScopedFastFlag sff{FFlag::LuauUserDefinedTypeFunctions, true};
+    ScopedFastFlag sff{FFlag::LuauUserDefinedTypeFunctionsSyntax2, true};
+    ScopedFastFlag sff2{FFlag::LuauUserDefinedTypeFunParseExport, true};
 
     AstStat* stat = parse(R"(
         type function foo()
-            return
+            return types.number
+        end
+
+        export type function bar()
+            return types.string
         end
     )");
 
@@ -2397,6 +2395,37 @@ TEST_CASE_FIXTURE(Fixture, "parse_user_defined_type_functions")
     AstStatTypeFunction* f = stat->as<AstStatBlock>()->body.data[0]->as<AstStatTypeFunction>();
     REQUIRE(f != nullptr);
     REQUIRE(f->name == "foo");
+}
+
+TEST_CASE_FIXTURE(Fixture, "parse_nested_type_function")
+{
+    ScopedFastFlag sff{FFlag::LuauUserDefinedTypeFunctionsSyntax2, true};
+
+    AstStat* stat = parse(R"(
+        local v1 = 1
+        type function foo()
+            local v2 = 2
+            local function bar()
+                v2 += 1
+                type function inner() end
+                v2 += 2
+            end
+            local function bar2()
+                v2 += 3
+            end
+        end
+        local function bar() v1 += 1 end
+    )");
+
+    REQUIRE(stat != nullptr);
+}
+
+TEST_CASE_FIXTURE(Fixture, "invalid_user_defined_type_functions")
+{
+    ScopedFastFlag sff{FFlag::LuauUserDefinedTypeFunctionsSyntax2, true};
+
+    matchParseError("local foo = 1; type function bar() print(foo) end", "Type function cannot reference outer local 'foo'");
+    matchParseError("type function foo() local v1 = 1; type function bar() print(v1) end end", "Type function cannot reference outer local 'v1'");
 }
 
 TEST_SUITE_END();
@@ -2601,9 +2630,7 @@ TEST_CASE_FIXTURE(Fixture, "recovery_of_parenthesized_expressions")
         }
     };
 
-    ScopedFastFlag sff[] = {
-        {FFlag::DebugLuauDeferredConstraintResolution, false},
-    };
+    DOES_NOT_PASS_NEW_SOLVER_GUARD();
 
     checkRecovery("function foo(a, b. c) return a + b end", "function foo(a, b) return a + b end", 1);
     checkRecovery(
@@ -2845,9 +2872,7 @@ TEST_CASE_FIXTURE(Fixture, "AstName_comparison")
 
 TEST_CASE_FIXTURE(Fixture, "generic_type_list_recovery")
 {
-    ScopedFastFlag sff[] = {
-        {FFlag::DebugLuauDeferredConstraintResolution, false},
-    };
+    DOES_NOT_PASS_NEW_SOLVER_GUARD();
 
     try
     {
@@ -3143,8 +3168,6 @@ TEST_CASE_FIXTURE(Fixture, "do_block_with_no_end")
 
 TEST_CASE_FIXTURE(Fixture, "parse_interpolated_string_with_lookahead_involved")
 {
-    ScopedFastFlag sff{FFlag::LuauLexerLookaheadRemembersBraceType, true};
-
     ParseResult result = tryParse(R"(
         local x = `{ {y} }`
     )");
@@ -3154,8 +3177,6 @@ TEST_CASE_FIXTURE(Fixture, "parse_interpolated_string_with_lookahead_involved")
 
 TEST_CASE_FIXTURE(Fixture, "parse_interpolated_string_with_lookahead_involved2")
 {
-    ScopedFastFlag sff{FFlag::LuauLexerLookaheadRemembersBraceType, true};
-
     ParseResult result = tryParse(R"(
         local x = `{ { y{} } }`
     )");
@@ -3656,6 +3677,70 @@ TEST_CASE_FIXTURE(Fixture, "mixed_leading_intersection_and_union_not_allowed")
 {
     matchParseError("type A = & number | string | boolean", "Mixing union and intersection types is not allowed; consider wrapping in parentheses.");
     matchParseError("type A = | number & string & boolean", "Mixing union and intersection types is not allowed; consider wrapping in parentheses.");
+}
+
+TEST_CASE_FIXTURE(Fixture, "grouped_function_type")
+{
+    ScopedFastFlag _{FFlag::LuauAllowComplexTypesInGenericParams, true};
+    const auto root = parse(R"(
+        type X<T> = T
+        local x: X<(() -> ())?>
+    )");
+    LUAU_ASSERT(root);
+    CHECK_EQ(root->body.size, 2);
+    auto assignment = root->body.data[1]->as<AstStatLocal>();
+    LUAU_ASSERT(assignment);
+    CHECK_EQ(assignment->vars.size, 1);
+    CHECK_EQ(assignment->values.size, 0);
+    auto binding = assignment->vars.data[0];
+    CHECK_EQ(binding->name, "x");
+    auto genericTy = binding->annotation->as<AstTypeReference>();
+    LUAU_ASSERT(genericTy);
+    CHECK_EQ(genericTy->parameters.size, 1);
+    auto paramTy = genericTy->parameters.data[0];
+    LUAU_ASSERT(paramTy.type);
+    auto unionTy = paramTy.type->as<AstTypeUnion>();
+    LUAU_ASSERT(unionTy);
+    CHECK_EQ(unionTy->types.size, 2);
+    CHECK(unionTy->types.data[0]->is<AstTypeFunction>()); // () -> ()
+    CHECK(unionTy->types.data[1]->is<AstTypeReference>()); // nil
+}
+
+TEST_CASE_FIXTURE(Fixture, "complex_union_in_generic_ty")
+{
+    ScopedFastFlag _{FFlag::LuauAllowComplexTypesInGenericParams, true};
+    const auto root = parse(R"(
+        type X<T> = T
+        local x: X<
+            | number
+            | boolean
+            | string
+        >
+    )");
+    LUAU_ASSERT(root);
+    CHECK_EQ(root->body.size, 2);
+    auto assignment = root->body.data[1]->as<AstStatLocal>();
+    LUAU_ASSERT(assignment);
+    CHECK_EQ(assignment->vars.size, 1);
+    CHECK_EQ(assignment->values.size, 0);
+    auto binding = assignment->vars.data[0];
+    CHECK_EQ(binding->name, "x");
+    auto genericTy = binding->annotation->as<AstTypeReference>();
+    LUAU_ASSERT(genericTy);
+    CHECK_EQ(genericTy->parameters.size, 1);
+    auto paramTy = genericTy->parameters.data[0];
+    LUAU_ASSERT(paramTy.type);
+    auto unionTy = paramTy.type->as<AstTypeUnion>();
+    LUAU_ASSERT(unionTy);
+    CHECK_EQ(unionTy->types.size, 3);
+    // NOTE: These are `const char*` so we can compare them to `AstName`s later.
+    std::vector<const char*> expectedTypes{"number", "boolean", "string"};
+    for (size_t i = 0; i < expectedTypes.size(); i++)
+    {
+        auto ty = unionTy->types.data[i]->as<AstTypeReference>();
+        LUAU_ASSERT(ty);
+        CHECK_EQ(ty->name, expectedTypes[i]);
+    }
 }
 
 

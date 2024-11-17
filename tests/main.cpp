@@ -28,6 +28,7 @@
 #endif
 
 #include <optional>
+
 #include <stdio.h>
 
 // Indicates if verbose output is enabled; can be overridden via --verbose
@@ -51,7 +52,7 @@ static bool skipFastFlag(const char* flagName)
     if (strncmp(flagName, "Debug", 5) == 0)
         return true;
 
-    if (strcmp(flagName, "StudioReportLuauAny") == 0)
+    if (strcmp(flagName, "StudioReportLuauAny2") == 0)
         return true;
 
     return false;

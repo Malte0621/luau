@@ -15,9 +15,6 @@
 #include "lstate.h"
 #include "lgc.h"
 
-LUAU_FASTFLAG(LuauCodegenFastcall3)
-LUAU_FASTFLAG(LuauCodegenMathSign)
-
 namespace Luau
 {
 namespace CodeGen
@@ -596,8 +593,6 @@ void IrLoweringX64::lowerInst(IrInst& inst, uint32_t index, const IrBlock& next)
         break;
     case IrCmd::SIGN_NUM:
     {
-        CODEGEN_ASSERT(FFlag::LuauCodegenMathSign);
-
         inst.regX64 = regs.allocRegOrReuse(SizeX64::xmmword, index, {inst.a});
 
         ScopedRegX64 tmp0{regs, SizeX64::xmmword};
@@ -678,6 +673,20 @@ void IrLoweringX64::lowerInst(IrInst& inst, uint32_t index, const IrBlock& next)
         inst.regX64 = regs.allocRegOrReuse(SizeX64::xmmword, index, {inst.a});
 
         build.vxorpd(inst.regX64, regOp(inst.a), build.f32x4(-0.0, -0.0, -0.0, -0.0));
+        break;
+    }
+    case IrCmd::DOT_VEC:
+    {
+        inst.regX64 = regs.allocRegOrReuse(SizeX64::xmmword, index, {inst.a, inst.b});
+
+        ScopedRegX64 tmp1{regs};
+        ScopedRegX64 tmp2{regs};
+
+        RegisterX64 tmpa = vecOp(inst.a, tmp1);
+        RegisterX64 tmpb = (inst.a == inst.b) ? tmpa : vecOp(inst.b, tmp2);
+
+        build.vdpps(inst.regX64, tmpa, tmpb, 0x71); // 7 = 0b0111, sum first 3 products into first float
+        build.vcvtss2sd(inst.regX64, inst.regX64, inst.regX64);
         break;
     }
     case IrCmd::NOT_ANY:
@@ -1038,10 +1047,7 @@ void IrLoweringX64::lowerInst(IrInst& inst, uint32_t index, const IrBlock& next)
 
     case IrCmd::FASTCALL:
     {
-        if (FFlag::LuauCodegenFastcall3)
-            emitBuiltin(regs, build, uintOp(inst.a), vmRegOp(inst.b), vmRegOp(inst.c), intOp(inst.d));
-        else
-            emitBuiltin(regs, build, uintOp(inst.a), vmRegOp(inst.b), vmRegOp(inst.c), intOp(inst.f));
+        emitBuiltin(regs, build, uintOp(inst.a), vmRegOp(inst.b), vmRegOp(inst.c), intOp(inst.d));
         break;
     }
     case IrCmd::INVOKE_FASTCALL:
@@ -1052,7 +1058,7 @@ void IrLoweringX64::lowerInst(IrInst& inst, uint32_t index, const IrBlock& next)
         ScopedRegX64 argsAlt{regs};
 
         // 'E' argument can only be produced by LOP_FASTCALL3
-        if (FFlag::LuauCodegenFastcall3 && inst.e.kind != IrOpKind::Undef)
+        if (inst.e.kind != IrOpKind::Undef)
         {
             CODEGEN_ASSERT(intOp(inst.f) == 3);
 
@@ -1079,8 +1085,8 @@ void IrLoweringX64::lowerInst(IrInst& inst, uint32_t index, const IrBlock& next)
 
         int ra = vmRegOp(inst.b);
         int arg = vmRegOp(inst.c);
-        int nparams = intOp(FFlag::LuauCodegenFastcall3 ? inst.f : inst.e);
-        int nresults = intOp(FFlag::LuauCodegenFastcall3 ? inst.g : inst.f);
+        int nparams = intOp(inst.f);
+        int nresults = intOp(inst.g);
 
         IrCallWrapperX64 callWrap(regs, build, index);
         callWrap.addArgument(SizeX64::qword, rState);
@@ -1088,7 +1094,7 @@ void IrLoweringX64::lowerInst(IrInst& inst, uint32_t index, const IrBlock& next)
         callWrap.addArgument(SizeX64::qword, luauRegAddress(arg));
         callWrap.addArgument(SizeX64::dword, nresults);
 
-        if (FFlag::LuauCodegenFastcall3 && inst.e.kind != IrOpKind::Undef)
+        if (inst.e.kind != IrOpKind::Undef)
             callWrap.addArgument(SizeX64::qword, argsAlt);
         else
             callWrap.addArgument(SizeX64::qword, args);

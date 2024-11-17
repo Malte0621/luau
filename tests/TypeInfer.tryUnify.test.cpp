@@ -11,13 +11,13 @@
 
 using namespace Luau;
 
-LUAU_FASTFLAG(DebugLuauDeferredConstraintResolution);
+LUAU_FASTFLAG(LuauSolverV2);
 LUAU_FASTFLAG(LuauUnifierRecursionOnRestart);
 
 struct TryUnifyFixture : Fixture
 {
     // Cannot use `TryUnifyFixture` under DCR.
-    ScopedFastFlag noDcr{FFlag::DebugLuauDeferredConstraintResolution, false};
+    DOES_NOT_PASS_NEW_SOLVER_GUARD();
 
     TypeArena arena;
     ScopePtr globalScope{new Scope{arena.addTypePack({TypeId{}})}};
@@ -32,7 +32,7 @@ TEST_SUITE_BEGIN("TryUnifyTests");
 TEST_CASE_FIXTURE(TryUnifyFixture, "primitives_unify")
 {
     Type numberOne{TypeVariant{PrimitiveType{PrimitiveType::Number}}};
-    Type numberTwo = numberOne;
+    Type numberTwo = numberOne.clone();
 
     state.tryUnify(&numberTwo, &numberOne);
 
@@ -64,13 +64,13 @@ TEST_CASE_FIXTURE(TryUnifyFixture, "incompatible_functions_are_preserved")
     Type functionOne{TypeVariant{FunctionType(arena.addTypePack({arena.freshType(globalScope->level)}), arena.addTypePack({builtinTypes->numberType}))
     }};
 
-    Type functionOneSaved = functionOne;
+    Type functionOneSaved = functionOne.clone();
 
     TypePackVar argPackTwo{TypePack{{arena.freshType(globalScope->level)}, std::nullopt}};
     Type functionTwo{TypeVariant{FunctionType(arena.addTypePack({arena.freshType(globalScope->level)}), arena.addTypePack({builtinTypes->stringType}))
     }};
 
-    Type functionTwoSaved = functionTwo;
+    Type functionTwoSaved = functionTwo.clone();
 
     state.tryUnify(&functionTwo, &functionOne);
     CHECK(state.failure);
@@ -154,6 +154,8 @@ TEST_CASE_FIXTURE(Fixture, "uninhabited_intersection_sub_anything")
 
 TEST_CASE_FIXTURE(Fixture, "uninhabited_table_sub_never")
 {
+    DOES_NOT_PASS_NEW_SOLVER_GUARD();
+
     CheckResult result = check(R"(
         function f(arg : { prop : string & number }) : never
           return arg
@@ -164,6 +166,8 @@ TEST_CASE_FIXTURE(Fixture, "uninhabited_table_sub_never")
 
 TEST_CASE_FIXTURE(Fixture, "uninhabited_table_sub_anything")
 {
+    DOES_NOT_PASS_NEW_SOLVER_GUARD();
+
     CheckResult result = check(R"(
         function f(arg : { prop : string & number }) : boolean
           return arg
@@ -174,6 +178,8 @@ TEST_CASE_FIXTURE(Fixture, "uninhabited_table_sub_anything")
 
 TEST_CASE_FIXTURE(Fixture, "members_of_failed_typepack_unification_are_unified_with_errorType")
 {
+    DOES_NOT_PASS_NEW_SOLVER_GUARD();
+
     CheckResult result = check(R"(
         function f(arg: number) end
         local a
@@ -189,6 +195,8 @@ TEST_CASE_FIXTURE(Fixture, "members_of_failed_typepack_unification_are_unified_w
 
 TEST_CASE_FIXTURE(Fixture, "result_of_failed_typepack_unification_is_constrained")
 {
+    DOES_NOT_PASS_NEW_SOLVER_GUARD();
+
     CheckResult result = check(R"(
         function f(arg: number) return arg end
         local a
@@ -270,7 +278,7 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "cli_41095_concat_log_in_sealed_table_unifica
 
     LUAU_REQUIRE_ERROR_COUNT(2, result);
     CHECK_EQ(toString(result.errors[0]), "No overload for function accepts 0 arguments.");
-    if (FFlag::DebugLuauDeferredConstraintResolution)
+    if (FFlag::LuauSolverV2)
         CHECK_EQ(toString(result.errors[1]), "Available overloads: <V>({V}, V) -> (); and <V>({V}, number, V) -> ()");
     else
         CHECK_EQ(toString(result.errors[1]), "Available overloads: ({a}, a) -> (); and ({a}, number, a) -> ()");

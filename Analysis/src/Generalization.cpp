@@ -526,7 +526,7 @@ struct TypeCacher : TypeOnceVisitor
     DenseHashSet<TypePackId> uncacheablePacks{nullptr};
 
     explicit TypeCacher(NotNull<DenseHashSet<TypeId>> cachedTypes)
-        : TypeOnceVisitor(/* skipBoundTypes */ true)
+        : TypeOnceVisitor(/* skipBoundTypes */ false)
         , cachedTypes(cachedTypes)
     {
     }
@@ -563,9 +563,19 @@ struct TypeCacher : TypeOnceVisitor
 
     bool visit(TypeId ty) override
     {
-        if (isUncacheable(ty) || isCached(ty))
-            return false;
-        return true;
+        // NOTE: `TypeCacher` should explicitly visit _all_ types and type packs,
+        // otherwise it's prone to marking types that cannot be cached as
+        // cacheable.
+        LUAU_ASSERT(false);
+        LUAU_UNREACHABLE();
+    }
+
+    bool visit(TypeId ty, const BoundType& btv) override
+    {
+        traverse(btv.boundTo);
+        if (isUncacheable(btv.boundTo))
+            markUncacheable(ty);
+        return false;
     }
 
     bool visit(TypeId ty, const FreeType& ft) override
@@ -585,6 +595,12 @@ struct TypeCacher : TypeOnceVisitor
     }
 
     bool visit(TypeId ty, const GenericType&) override
+    {
+        cache(ty);
+        return false;
+    }
+
+    bool visit(TypeId ty, const ErrorType&) override
     {
         cache(ty);
         return false;
@@ -727,6 +743,17 @@ struct TypeCacher : TypeOnceVisitor
         return false;
     }
 
+    bool visit(TypeId ty, const MetatableType& mtv) override
+    {
+        traverse(mtv.table);
+        traverse(mtv.metatable);
+        if (isUncacheable(mtv.table) || isUncacheable(mtv.metatable))
+            markUncacheable(ty);
+        else
+            cache(ty);
+        return false;
+    }
+
     bool visit(TypeId ty, const ClassType&) override
     {
         cache(ty);
@@ -734,6 +761,12 @@ struct TypeCacher : TypeOnceVisitor
     }
 
     bool visit(TypeId ty, const AnyType&) override
+    {
+        cache(ty);
+        return false;
+    }
+
+    bool visit(TypeId ty, const NoRefineType&) override
     {
         cache(ty);
         return false;
@@ -841,10 +874,29 @@ struct TypeCacher : TypeOnceVisitor
         return false;
     }
 
+    bool visit(TypePackId tp) override
+    {
+        // NOTE: `TypeCacher` should explicitly visit _all_ types and type packs,
+        // otherwise it's prone to marking types that cannot be cached as
+        // cacheable, which will segfault down the line.
+        LUAU_ASSERT(false);
+        LUAU_UNREACHABLE();
+    }
+
     bool visit(TypePackId tp, const FreeTypePack&) override
     {
         markUncacheable(tp);
         return false;
+    }
+
+    bool visit(TypePackId tp, const GenericTypePack& gtp) override
+    {
+        return true;
+    }
+
+    bool visit(TypePackId tp, const Unifiable::Error& etp) override
+    {
+        return true;
     }
 
     bool visit(TypePackId tp, const VariadicTypePack& vtp) override
@@ -871,6 +923,31 @@ struct TypeCacher : TypeOnceVisitor
         markUncacheable(tp);
         return false;
     }
+
+    bool visit(TypePackId tp, const BoundTypePack& btp) override {
+        traverse(btp.boundTo);
+        if (isUncacheable(btp.boundTo))
+            markUncacheable(tp);
+        return false;
+    }
+
+    bool visit(TypePackId tp, const TypePack& typ) override
+    {
+        bool uncacheable = false;
+        for (TypeId ty : typ.head)
+        {
+            traverse(ty);
+            uncacheable |= isUncacheable(ty);
+        }
+        if (typ.tail)
+        {
+            traverse(*typ.tail);
+            uncacheable |= isUncacheable(*typ.tail);
+        }
+        if (uncacheable)
+            markUncacheable(tp);
+        return false;
+    }
 };
 
 std::optional<TypeId> generalize(
@@ -885,9 +962,6 @@ std::optional<TypeId> generalize(
     ty = follow(ty);
 
     if (ty->owningArena != arena || ty->persistent)
-        return ty;
-
-    if (const FunctionType* ft = get<FunctionType>(ty); ft && (!ft->generics.empty() || !ft->genericPacks.empty()))
         return ty;
 
     FreeTypeSearcher fts{scope, cachedTypes};
@@ -912,8 +986,17 @@ std::optional<TypeId> generalize(
     FunctionType* ftv = getMutable<FunctionType>(ty);
     if (ftv)
     {
-        ftv->generics = std::move(gen.generics);
-        ftv->genericPacks = std::move(gen.genericPacks);
+        // If we're generalizing a function type, add any of the newly inferred
+        // generics to the list of existing generic types.
+        for (const auto g : std::move(gen.generics))
+        {
+            ftv->generics.push_back(g);
+        }
+        // Ditto for generic packs.
+        for (const auto gp : std::move(gen.genericPacks))
+        {
+            ftv->genericPacks.push_back(gp);
+        }
     }
 
     return ty;

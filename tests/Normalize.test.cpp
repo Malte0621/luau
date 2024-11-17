@@ -10,9 +10,9 @@
 #include "Luau/Normalize.h"
 #include "Luau/BuiltinDefinitions.h"
 
-LUAU_FASTFLAG(DebugLuauDeferredConstraintResolution)
-LUAU_FASTFLAG(LuauNormalizeNotUnknownIntersection)
+LUAU_FASTFLAG(LuauSolverV2)
 LUAU_FASTINT(LuauTypeInferRecursionLimit)
+LUAU_FASTFLAG(LuauNormalizationTracksCyclicPairsThroughInhabitance)
 using namespace Luau;
 
 namespace
@@ -142,7 +142,7 @@ TEST_CASE_FIXTURE(IsSubtypeFixture, "table_with_union_prop")
     TypeId a = requireType("a");
     TypeId b = requireType("b");
 
-    if (FFlag::DebugLuauDeferredConstraintResolution)
+    if (FFlag::LuauSolverV2)
         CHECK(!isSubtype(a, b)); // table properties are invariant
     else
         CHECK(isSubtype(a, b));
@@ -159,7 +159,7 @@ TEST_CASE_FIXTURE(IsSubtypeFixture, "table_with_any_prop")
     TypeId a = requireType("a");
     TypeId b = requireType("b");
 
-    if (FFlag::DebugLuauDeferredConstraintResolution)
+    if (FFlag::LuauSolverV2)
         CHECK(!isSubtype(a, b)); // table properties are invariant
     else
         CHECK(isSubtype(a, b));
@@ -219,7 +219,7 @@ TEST_CASE_FIXTURE(IsSubtypeFixture, "tables")
     TypeId c = requireType("c");
     TypeId d = requireType("d");
 
-    if (FFlag::DebugLuauDeferredConstraintResolution)
+    if (FFlag::LuauSolverV2)
         CHECK(!isSubtype(a, b)); // table properties are invariant
     else
         CHECK(isSubtype(a, b));
@@ -231,7 +231,7 @@ TEST_CASE_FIXTURE(IsSubtypeFixture, "tables")
     CHECK(isSubtype(d, a));
     CHECK(!isSubtype(a, d));
 
-    if (FFlag::DebugLuauDeferredConstraintResolution)
+    if (FFlag::LuauSolverV2)
         CHECK(!isSubtype(d, b)); // table properties are invariant
     else
         CHECK(isSubtype(d, b));
@@ -406,7 +406,7 @@ TEST_CASE_FIXTURE(IsSubtypeFixture, "error_suppression")
 
     // We have added this as an exception - the set of inhabitants of any is exactly the set of inhabitants of unknown (since error has no
     // inhabitants). any = err | unknown, so under semantic subtyping, {} U unknown = unknown
-    if (FFlag::DebugLuauDeferredConstraintResolution)
+    if (FFlag::LuauSolverV2)
     {
         CHECK(isSubtype(any, unk));
     }
@@ -415,7 +415,15 @@ TEST_CASE_FIXTURE(IsSubtypeFixture, "error_suppression")
         CHECK(!isSubtype(any, unk));
     }
 
-    CHECK(!isSubtype(err, str));
+    if (FFlag::LuauSolverV2)
+    {
+        CHECK(isSubtype(err, str));
+    }
+    else
+    {
+        CHECK(!isSubtype(err, str));
+    }
+
     CHECK(!isSubtype(str, err));
 
     CHECK(!isSubtype(err, unk));
@@ -440,13 +448,13 @@ struct NormalizeFixture : Fixture
         registerHiddenTypes(&frontend);
     }
 
-    std::shared_ptr<const NormalizedType> toNormalizedType(const std::string& annotation)
+    std::shared_ptr<const NormalizedType> toNormalizedType(const std::string& annotation, int expectedErrors = 0)
     {
         normalizer.clearCaches();
         CheckResult result = check("type _Res = " + annotation);
-        LUAU_REQUIRE_NO_ERRORS(result);
+        LUAU_REQUIRE_ERROR_COUNT(expectedErrors, result);
 
-        if (FFlag::DebugLuauDeferredConstraintResolution)
+        if (FFlag::LuauSolverV2)
         {
             SourceModule* sourceModule = getMainSourceModule();
             REQUIRE(sourceModule);
@@ -662,7 +670,7 @@ TEST_CASE_FIXTURE(NormalizeFixture, "negated_function_is_anything_except_a_funct
 
 TEST_CASE_FIXTURE(NormalizeFixture, "specific_functions_cannot_be_negated")
 {
-    CHECK(nullptr == toNormalizedType("Not<(boolean) -> boolean>"));
+    CHECK(nullptr == toNormalizedType("Not<(boolean) -> boolean>", FFlag::LuauSolverV2 ? 1 : 0));
 }
 
 TEST_CASE_FIXTURE(NormalizeFixture, "trivial_intersection_inhabited")
@@ -701,6 +709,10 @@ TEST_CASE_FIXTURE(Fixture, "higher_order_function")
 
 TEST_CASE_FIXTURE(Fixture, "higher_order_function_with_annotation")
 {
+    // CLI-117088 - Inferring the type of a higher order function with an annotation sometimes doesn't fully constrain the type (there are free types
+    // left over).
+    if (FFlag::LuauSolverV2)
+        return;
     check(R"(
         function apply<a, b>(f: (a) -> b, x)
             return f(x)
@@ -769,7 +781,7 @@ TEST_CASE_FIXTURE(NormalizeFixture, "narrow_union_of_classes_with_intersection")
 
 TEST_CASE_FIXTURE(NormalizeFixture, "intersection_of_metatables_where_the_metatable_is_top_or_bottom")
 {
-    if (FFlag::DebugLuauDeferredConstraintResolution)
+    if (FFlag::LuauSolverV2)
         CHECK("{ @metatable *error-type*, {  } }" == toString(normal("Mt<{}, any> & Mt<{}, err>")));
     else
         CHECK("{ @metatable *error-type*, {|  |} }" == toString(normal("Mt<{}, any> & Mt<{}, err>")));
@@ -866,7 +878,7 @@ TEST_CASE_FIXTURE(NormalizeFixture, "classes_and_never")
 TEST_CASE_FIXTURE(NormalizeFixture, "top_table_type")
 {
     CHECK("table" == toString(normal("{} | tbl")));
-    if (FFlag::DebugLuauDeferredConstraintResolution)
+    if (FFlag::LuauSolverV2)
         CHECK("{  }" == toString(normal("{} & tbl")));
     else
         CHECK("{|  |}" == toString(normal("{} & tbl")));
@@ -875,7 +887,7 @@ TEST_CASE_FIXTURE(NormalizeFixture, "top_table_type")
 
 TEST_CASE_FIXTURE(NormalizeFixture, "negations_of_tables")
 {
-    CHECK(nullptr == toNormalizedType("Not<{}>"));
+    CHECK(nullptr == toNormalizedType("Not<{}>", FFlag::LuauSolverV2 ? 1 : 0));
     CHECK("(boolean | buffer | class | function | number | string | thread)?" == toString(normal("Not<tbl>")));
     CHECK("table" == toString(normal("Not<Not<tbl>>")));
 }
@@ -916,7 +928,7 @@ TEST_CASE_FIXTURE(NormalizeFixture, "normalize_unknown")
 
 TEST_CASE_FIXTURE(NormalizeFixture, "read_only_props")
 {
-    ScopedFastFlag sff{FFlag::DebugLuauDeferredConstraintResolution, true};
+    ScopedFastFlag sff{FFlag::LuauSolverV2, true};
 
     CHECK("{ x: string }" == toString(normal("{ read x: string } & { x: string }"), {true}));
     CHECK("{ x: string }" == toString(normal("{ x: string } & { read x: string }"), {true}));
@@ -924,7 +936,7 @@ TEST_CASE_FIXTURE(NormalizeFixture, "read_only_props")
 
 TEST_CASE_FIXTURE(NormalizeFixture, "read_only_props_2")
 {
-    ScopedFastFlag sff{FFlag::DebugLuauDeferredConstraintResolution, true};
+    ScopedFastFlag sff{FFlag::LuauSolverV2, true};
 
     CHECK(R"({ x: "hello" })" == toString(normal(R"({ x: "hello" } & { x: string })"), {true}));
     CHECK(R"(never)" == toString(normal(R"({ x: "hello" } & { x: "world" })"), {true}));
@@ -932,7 +944,7 @@ TEST_CASE_FIXTURE(NormalizeFixture, "read_only_props_2")
 
 TEST_CASE_FIXTURE(NormalizeFixture, "read_only_props_3")
 {
-    ScopedFastFlag sff{FFlag::DebugLuauDeferredConstraintResolution, true};
+    ScopedFastFlag sff{FFlag::LuauSolverV2, true};
 
     CHECK(R"({ read x: "hello" })" == toString(normal(R"({ read x: "hello" } & { read x: string })"), {true}));
     CHECK("never" == toString(normal(R"({ read x: "hello" } & { read x: "world" })"), {true}));
@@ -958,8 +970,6 @@ TEST_CASE_FIXTURE(NormalizeFixture, "non_final_types_can_be_normalized_but_are_n
 
 TEST_CASE_FIXTURE(NormalizeFixture, "intersect_with_not_unknown")
 {
-    ScopedFastFlag sff{FFlag::LuauNormalizeNotUnknownIntersection, true};
-
     TypeId notUnknown = arena.addType(NegationType{builtinTypes->unknownType});
     TypeId type = arena.addType(IntersectionType{{builtinTypes->numberType, notUnknown}});
     std::shared_ptr<const NormalizedType> normalized = normalizer.normalize(type);
@@ -997,7 +1007,7 @@ TEST_CASE_FIXTURE(NormalizeFixture, "cyclic_stack_overflow_2")
 
 TEST_CASE_FIXTURE(NormalizeFixture, "truthy_table_property_and_optional_table_with_optional_prop")
 {
-    ScopedFastFlag sff{FFlag::DebugLuauDeferredConstraintResolution, true};
+    ScopedFastFlag sff{FFlag::LuauSolverV2, true};
 
     // { x: ~(false?) }
     TypeId t1 = arena.addType(TableType{TableType::Props{{"x", builtinTypes->truthyType}}, std::nullopt, TypeLevel{}, TableState::Sealed});
@@ -1015,6 +1025,111 @@ TEST_CASE_FIXTURE(NormalizeFixture, "truthy_table_property_and_optional_table_wi
 
     TypeId ty = normalizer.typeFromNormal(*norm);
     CHECK("{ x: number }" == toString(ty));
+}
+
+TEST_CASE_FIXTURE(BuiltinsFixture, "normalizer_should_be_able_to_detect_cyclic_tables_and_not_stack_overflow")
+{
+    if (!FFlag::LuauSolverV2)
+        return;
+    ScopedFastInt sfi{FInt::LuauTypeInferRecursionLimit, 0};
+    ScopedFastFlag sff{FFlag::LuauNormalizationTracksCyclicPairsThroughInhabitance, true};
+    CheckResult result = check(R"(
+--!strict
+
+type Array<T> = { [number] : T}
+type Object = { [number] : any}
+
+type Set<T> = typeof(setmetatable(
+	{} :: {
+		size: number,
+		-- method definitions
+		add: (self: Set<T>, T) -> Set<T>,
+		clear: (self: Set<T>) -> (),
+		delete: (self: Set<T>, T) -> boolean,
+		has: (self: Set<T>, T) -> boolean,
+		ipairs: (self: Set<T>) -> any,
+	},
+	{} :: {
+		__index: Set<T>,
+		__iter: (self: Set<T>) -> (<K, V>({ [K]: V }, K?) -> (K, V), T),
+	}
+))
+
+type Map<K, V> = typeof(setmetatable(
+	{} :: {
+		size: number,
+		-- method definitions
+		set: (self: Map<K, V>, K, V) -> Map<K, V>,
+		get: (self: Map<K, V>, K) -> V | nil,
+		clear: (self: Map<K, V>) -> (),
+		delete: (self: Map<K, V>, K) -> boolean,
+		[K]: V,
+		has: (self: Map<K, V>, K) -> boolean,
+		keys: (self: Map<K, V>) -> Array<K>,
+		values: (self: Map<K, V>) -> Array<V>,
+		entries: (self: Map<K, V>) -> Array<Tuple<K, V>>,
+		ipairs: (self: Map<K, V>) -> any,
+		_map: { [K]: V },
+		_array: { [number]: K },
+		__index: (self: Map<K, V>, key: K) -> V,
+		__iter: (self: Map<K, V>) -> (<K, V>({ [K]: V }, K?) -> (K?, V), V),
+		__newindex: (self: Map<K, V>, key: K, value: V) -> (),
+	},
+	{} :: {
+		__index: Map<K, V>,
+		__iter: (self: Map<K, V>) -> (<K, V>({ [K]: V }, K?) -> (K, V), V),
+		__newindex: (self: Map<K, V>, key: K, value: V) -> (),
+	}
+))
+type mapFn<T, U> = (element: T, index: number) -> U
+type mapFnWithThisArg<T, U> = (thisArg: any, element: T, index: number) -> U
+
+function fromSet<T, U>(
+	value: Set<T>,
+	mapFn: (mapFn<T, U> | mapFnWithThisArg<T, U>)?,
+	thisArg: Object?
+	-- FIXME Luau: need overloading so the return type on this is more sane and doesn't require manual casts
+): Array<U> | Array<T> | Array<string>
+
+    local array : { [number] : string} = {"foo"}
+	return array
+end
+
+function instanceof(tbl: any, class: any): boolean
+    return true
+end
+
+function fromArray<T, U>(
+	value: Array<T>,
+	mapFn: (mapFn<T, U> | mapFnWithThisArg<T, U>)?,
+	thisArg: Object?
+	-- FIXME Luau: need overloading so the return type on this is more sane and doesn't require manual casts
+): Array<U> | Array<T> | Array<string>
+	local array : {[number] : string} = {}
+	return array
+end
+
+return function<T, U>(
+	value: string | Array<T> | Set<T> | Map<any, any>,
+	mapFn: (mapFn<T, U> | mapFnWithThisArg<T, U>)?,
+	thisArg: Object?
+	-- FIXME Luau: need overloading so the return type on this is more sane and doesn't require manual casts
+): Array<U> | Array<T> | Array<string>
+	if value == nil then
+		error("cannot create array from a nil value")
+	end
+	local array: Array<U> | Array<T> | Array<string>
+
+    if instanceof(value, Set) then
+		array = fromSet(value :: Set<T>, mapFn, thisArg)
+	else
+		array = {}
+	end
+
+
+	return array
+end
+)");
 }
 
 TEST_SUITE_END();

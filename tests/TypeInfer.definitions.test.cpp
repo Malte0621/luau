@@ -7,9 +7,9 @@
 
 #include "doctest.h"
 
-LUAU_FASTFLAG(LuauDeclarationExtraPropData)
-
 using namespace Luau;
+
+LUAU_FASTFLAG(LuauNewSolverPrePopulateClasses)
 
 TEST_SUITE_BEGIN("DefinitionTests");
 
@@ -346,8 +346,6 @@ TEST_CASE_FIXTURE(Fixture, "definitions_documentation_symbols")
 
 TEST_CASE_FIXTURE(Fixture, "definitions_symbols_are_generated_for_recursively_referenced_types")
 {
-    ScopedFastFlag luauDeclarationExtraPropData{FFlag::LuauDeclarationExtraPropData, true};
-
     loadDefinition(R"(
         declare class MyClass
             function myMethod(self)
@@ -447,6 +445,26 @@ TEST_CASE_FIXTURE(Fixture, "class_definition_string_props")
     CHECK_EQ(toString(requireType("y")), "string");
 }
 
+TEST_CASE_FIXTURE(Fixture, "class_definition_malformed_string")
+{
+    unfreeze(frontend.globals.globalTypes);
+    LoadDefinitionFileResult result = frontend.loadDefinitionFile(
+        frontend.globals,
+        frontend.globals.globalScope,
+        R"(
+        declare class Foo
+            ["a\0property"]: string
+        end
+    )",
+        "@test",
+        /* captureComments */ false
+    );
+    freeze(frontend.globals.globalTypes);
+
+    REQUIRE(!result.success);
+    REQUIRE_EQ(result.parseResult.errors.size(), 1);
+    CHECK_EQ(result.parseResult.errors[0].getMessage(), "String literal contains malformed escape sequence or \\0");
+}
 
 TEST_CASE_FIXTURE(Fixture, "class_definition_indexer")
 {
@@ -476,11 +494,8 @@ TEST_CASE_FIXTURE(Fixture, "class_definition_indexer")
 
 TEST_CASE_FIXTURE(Fixture, "class_definitions_reference_other_classes")
 {
-    unfreeze(frontend.globals.globalTypes);
-    LoadDefinitionFileResult result = frontend.loadDefinitionFile(
-        frontend.globals,
-        frontend.globals.globalScope,
-        R"(
+    ScopedFastFlag _{FFlag::LuauNewSolverPrePopulateClasses, true};
+    loadDefinition(R"(
         declare class Channel
             Messages: { Message }
             OnMessage: (message: Message) -> ()
@@ -490,13 +505,19 @@ TEST_CASE_FIXTURE(Fixture, "class_definitions_reference_other_classes")
             Text: string
             Channel: Channel
         end
-    )",
-        "@test",
-        /* captureComments */ false
-    );
-    freeze(frontend.globals.globalTypes);
+    )");
 
-    REQUIRE(result.success);
+    CheckResult result = check(R"(
+        local a: Channel
+        local b = a.Messages[1]
+        local c = b.Channel
+    )");
+
+    LUAU_REQUIRE_NO_ERRORS(result);
+
+    CHECK_EQ(toString(requireType("a")), "Channel");
+    CHECK_EQ(toString(requireType("b")), "Message");
+    CHECK_EQ(toString(requireType("c")), "Channel");
 }
 
 TEST_CASE_FIXTURE(Fixture, "definition_file_has_source_module_name_set")

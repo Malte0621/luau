@@ -2,7 +2,7 @@
 #include "ConstraintGeneratorFixture.h"
 #include "ScopedFlags.h"
 
-LUAU_FASTFLAG(DebugLuauDeferredConstraintResolution);
+LUAU_FASTFLAG(LuauSolverV2);
 
 namespace Luau
 {
@@ -10,7 +10,8 @@ namespace Luau
 ConstraintGeneratorFixture::ConstraintGeneratorFixture()
     : Fixture()
     , mainModule(new Module)
-    , forceTheFlag{FFlag::DebugLuauDeferredConstraintResolution, true}
+    , simplifier(newSimplifier(NotNull{&arena}, builtinTypes))
+    , forceTheFlag{FFlag::LuauSolverV2, true}
 {
     mainModule->name = "MainModule";
     mainModule->humanReadableName = "MainModule";
@@ -25,6 +26,8 @@ void ConstraintGeneratorFixture::generateConstraints(const std::string& code)
     cg = std::make_unique<ConstraintGenerator>(
         mainModule,
         NotNull{&normalizer},
+        NotNull{simplifier.get()},
+        NotNull{&typeFunctionRuntime},
         NotNull(&moduleResolver),
         builtinTypes,
         NotNull(&ice),
@@ -42,7 +45,20 @@ void ConstraintGeneratorFixture::generateConstraints(const std::string& code)
 void ConstraintGeneratorFixture::solve(const std::string& code)
 {
     generateConstraints(code);
-    ConstraintSolver cs{NotNull{&normalizer}, NotNull{rootScope}, constraints, "MainModule", NotNull(&moduleResolver), {}, &logger, {}};
+    ConstraintSolver cs{
+        NotNull{&normalizer},
+        NotNull{simplifier.get()},
+        NotNull{&typeFunctionRuntime},
+        NotNull{rootScope},
+        constraints,
+        "MainModule",
+        NotNull(&moduleResolver),
+        {},
+        &logger,
+        NotNull{dfg.get()},
+        {}
+    };
+
     cs.run();
 }
 

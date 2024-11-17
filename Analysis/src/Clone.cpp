@@ -6,7 +6,7 @@
 #include "Luau/TypePack.h"
 #include "Luau/Unifiable.h"
 
-LUAU_FASTFLAG(DebugLuauDeferredConstraintResolution)
+LUAU_FASTFLAG(LuauSolverV2)
 
 // For each `Luau::clone` call, we will clone only up to N amount of types _and_ packs, as controlled by this limit.
 LUAU_FASTINTVARIABLE(LuauTypeCloneIterationLimit, 100'000)
@@ -140,7 +140,7 @@ private:
         }
     }
 
-private:
+public:
     TypeId shallowClone(TypeId ty)
     {
         // We want to [`Luau::follow`] but without forcing the expansion of [`LazyType`]s.
@@ -189,9 +189,10 @@ private:
         return target;
     }
 
+private:
     Property shallowClone(const Property& p)
     {
-        if (FFlag::DebugLuauDeferredConstraintResolution)
+        if (FFlag::LuauSolverV2)
         {
             std::optional<TypeId> cloneReadTy;
             if (auto ty = p.readTy)
@@ -359,6 +360,11 @@ private:
         // noop.
     }
 
+    void cloneChildren(NoRefineType* t)
+    {
+        // noop.
+    }
+
     void cloneChildren(UnionType* t)
     {
         for (TypeId& ty : t->options)
@@ -447,6 +453,24 @@ private:
 };
 
 } // namespace
+
+TypePackId shallowClone(TypePackId tp, TypeArena& dest, CloneState& cloneState)
+{
+    if (tp->persistent)
+        return tp;
+
+    TypeCloner cloner{NotNull{&dest}, cloneState.builtinTypes, NotNull{&cloneState.seenTypes}, NotNull{&cloneState.seenTypePacks}};
+    return cloner.shallowClone(tp);
+}
+
+TypeId shallowClone(TypeId typeId, TypeArena& dest, CloneState& cloneState)
+{
+    if (typeId->persistent)
+        return typeId;
+
+    TypeCloner cloner{NotNull{&dest}, cloneState.builtinTypes, NotNull{&cloneState.seenTypes}, NotNull{&cloneState.seenTypePacks}};
+    return cloner.shallowClone(typeId);
+}
 
 TypePackId clone(TypePackId tp, TypeArena& dest, CloneState& cloneState)
 {

@@ -146,7 +146,7 @@ private:
     AstStat* parseTypeAlias(const Location& start, bool exported);
 
     // type function Name ... end
-    AstStat* parseTypeFunction(const Location& start);
+    AstStat* parseTypeFunction(const Location& start, bool exported);
 
     AstDeclaredClassProp parseDeclaredClassMethod();
 
@@ -217,7 +217,7 @@ private:
     AstType* parseTableType(bool inDeclarationContext = false);
     AstTypeOrPack parseSimpleType(bool allowPack, bool inDeclarationContext = false);
 
-    AstTypeOrPack parseTypeOrPack();
+    AstTypeOrPack parseSimpleTypeOrPack();
     AstType* parseType(bool inDeclarationContext = false);
 
     AstTypePack* parseTypePack();
@@ -423,6 +423,7 @@ private:
     MatchLexeme endMismatchSuspect;
 
     std::vector<Function> functionStack;
+    size_t typeFunctionDepth = 0;
 
     DenseHashMap<AstName, AstLocal*> localMap;
     std::vector<AstLocal*> localStack;

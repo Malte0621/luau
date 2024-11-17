@@ -8,7 +8,7 @@
 
 using namespace Luau;
 
-LUAU_FASTFLAG(DebugLuauDeferredConstraintResolution);
+LUAU_FASTFLAG(LuauSolverV2)
 
 TEST_SUITE_BEGIN("UnionTypes");
 
@@ -35,7 +35,7 @@ TEST_CASE_FIXTURE(Fixture, "return_types_can_be_disjoint")
 {
     // CLI-114134 We need egraphs to consistently reduce the cyclic union
     // introduced by the increment here.
-    ScopedFastFlag sff{FFlag::DebugLuauDeferredConstraintResolution, false};
+    DOES_NOT_PASS_NEW_SOLVER_GUARD();
 
     CheckResult result = check(R"(
         local count = 0
@@ -121,7 +121,7 @@ TEST_CASE_FIXTURE(Fixture, "optional_arguments")
 TEST_CASE_FIXTURE(Fixture, "optional_arguments_table")
 {
     // CLI-115588 - Bidirectional inference does not happen for assignments
-    ScopedFastFlag sff{FFlag::DebugLuauDeferredConstraintResolution, false};
+    DOES_NOT_PASS_NEW_SOLVER_GUARD();
 
     CheckResult result = check(R"(
         local a:{a:string, b:string?}
@@ -236,7 +236,7 @@ TEST_CASE_FIXTURE(Fixture, "index_on_a_union_type_with_missing_property")
     REQUIRE(mup);
     CHECK_EQ("Key 'x' is missing from 'B' in the type 'A | B'", toString(result.errors[0]));
 
-    if (FFlag::DebugLuauDeferredConstraintResolution)
+    if (FFlag::LuauSolverV2)
         CHECK_EQ("(A | B) -> number", toString(requireType("f")));
     else
         CHECK_EQ("(A | B) -> *error-type*", toString(requireType("f")));
@@ -410,7 +410,7 @@ TEST_CASE_FIXTURE(Fixture, "optional_assignment_errors_2")
 
     LUAU_REQUIRE_ERROR_COUNT(1, result);
     auto s = toString(result.errors[0]);
-    if (FFlag::DebugLuauDeferredConstraintResolution)
+    if (FFlag::LuauSolverV2)
         CHECK_EQ("Value of type '({ x: number } & { y: number })?' could be nil", s);
     else
         CHECK_EQ("Value of type '({| x: number |} & {| y: number |})?' could be nil", s);
@@ -418,6 +418,9 @@ TEST_CASE_FIXTURE(Fixture, "optional_assignment_errors_2")
 
 TEST_CASE_FIXTURE(Fixture, "optional_length_error")
 {
+
+    ScopedFastFlag _{FFlag::LuauSolverV2, true};
+
     CheckResult result = check(R"(
         type A = {number}
         function f(a: A?)
@@ -425,8 +428,10 @@ TEST_CASE_FIXTURE(Fixture, "optional_length_error")
         end
     )");
 
-    LUAU_REQUIRE_ERROR_COUNT(1, result);
-    CHECK_EQ("Value of type 'A?' could be nil", toString(result.errors[0]));
+    // CLI-119936: This shouldn't double error but does under the new solver.
+    LUAU_REQUIRE_ERROR_COUNT(2, result);
+    CHECK_EQ("Operator '#' could not be applied to operand of type A?; there is no corresponding overload for __len", toString(result.errors[0]));
+    CHECK_EQ("Value of type 'A?' could be nil", toString(result.errors[1]));
 }
 
 TEST_CASE_FIXTURE(Fixture, "optional_missing_key_error_details")
@@ -472,7 +477,7 @@ end
 
 TEST_CASE_FIXTURE(Fixture, "unify_unsealed_table_union_check")
 {
-    ScopedFastFlag sff{FFlag::DebugLuauDeferredConstraintResolution, false};
+    DOES_NOT_PASS_NEW_SOLVER_GUARD();
 
     CheckResult result = check(R"(
 local x = { x = 3 }
@@ -533,7 +538,7 @@ end
 
     LUAU_REQUIRE_ERROR_COUNT(1, result);
 
-    if (FFlag::DebugLuauDeferredConstraintResolution)
+    if (FFlag::LuauSolverV2)
     {
         CHECK_EQ(
             toString(result.errors[0]),
@@ -565,7 +570,7 @@ TEST_CASE_FIXTURE(Fixture, "error_detailed_union_all")
     )");
 
     LUAU_REQUIRE_ERROR_COUNT(1, result);
-    if (FFlag::DebugLuauDeferredConstraintResolution)
+    if (FFlag::LuauSolverV2)
         CHECK(toString(result.errors[0]) == "Type '{ w: number }' could not be converted into 'X | Y | Z'");
     else
         CHECK_EQ(toString(result.errors[0]), R"(Type 'a' could not be converted into 'X | Y | Z'; none of the union options are compatible)");
@@ -580,7 +585,7 @@ local a: X? = { w = 4 }
     )");
 
     LUAU_REQUIRE_ERROR_COUNT(1, result);
-    if (FFlag::DebugLuauDeferredConstraintResolution)
+    if (FFlag::LuauSolverV2)
         CHECK("Type '{ w: number }' could not be converted into 'X?'" == toString(result.errors[0]));
     else
     {
@@ -636,12 +641,15 @@ TEST_CASE_FIXTURE(Fixture, "indexing_into_a_cyclic_union_doesnt_crash")
         end
     )");
 
-    LUAU_REQUIRE_ERROR_COUNT(1, result);
+    // this is a cyclic union of number arrays, so it _is_ a table, even if it's a nonsense type.
+    // no need to generate a NotATable error here. The new solver automatically handles this and
+    // correctly reports no errors.
+    LUAU_REQUIRE_NO_ERRORS(result);
 }
 
 TEST_CASE_FIXTURE(BuiltinsFixture, "table_union_write_indirect")
 {
-    ScopedFastFlag sff{FFlag::DebugLuauDeferredConstraintResolution, false};
+    DOES_NOT_PASS_NEW_SOLVER_GUARD();
 
     CheckResult result = check(R"(
         type A = { x: number, y: (number) -> string } | { z: number, y: (number) -> string }
@@ -717,7 +725,7 @@ TEST_CASE_FIXTURE(Fixture, "union_of_generic_typepack_functions")
 
 TEST_CASE_FIXTURE(Fixture, "union_of_functions_mentioning_generics")
 {
-    ScopedFastFlag sff{FFlag::DebugLuauDeferredConstraintResolution, false};
+    DOES_NOT_PASS_NEW_SOLVER_GUARD();
 
     CheckResult result = check(R"(
         function f<a,b>()
@@ -737,7 +745,7 @@ TEST_CASE_FIXTURE(Fixture, "union_of_functions_mentioning_generics")
 
 TEST_CASE_FIXTURE(Fixture, "union_of_functions_mentioning_generic_typepacks")
 {
-    ScopedFastFlag sff{FFlag::DebugLuauDeferredConstraintResolution, false};
+    DOES_NOT_PASS_NEW_SOLVER_GUARD();
 
     CheckResult result = check(R"(
         function f<a...>()
@@ -758,7 +766,7 @@ could not be converted into
 
 TEST_CASE_FIXTURE(Fixture, "union_of_functions_with_mismatching_arg_arities")
 {
-    ScopedFastFlag sff{FFlag::DebugLuauDeferredConstraintResolution, false};
+    DOES_NOT_PASS_NEW_SOLVER_GUARD();
 
     CheckResult result = check(R"(
         function f(x : (number) -> number?)
@@ -777,7 +785,7 @@ could not be converted into
 
 TEST_CASE_FIXTURE(Fixture, "union_of_functions_with_mismatching_result_arities")
 {
-    ScopedFastFlag sff{FFlag::DebugLuauDeferredConstraintResolution, false};
+    DOES_NOT_PASS_NEW_SOLVER_GUARD();
 
     CheckResult result = check(R"(
         function f(x : () -> (number | string))
@@ -796,7 +804,7 @@ could not be converted into
 
 TEST_CASE_FIXTURE(Fixture, "union_of_functions_with_variadics")
 {
-    ScopedFastFlag sff{FFlag::DebugLuauDeferredConstraintResolution, false};
+    DOES_NOT_PASS_NEW_SOLVER_GUARD();
 
     CheckResult result = check(R"(
         function f(x : (...nil) -> (...number?))
@@ -823,7 +831,7 @@ TEST_CASE_FIXTURE(Fixture, "union_of_functions_with_mismatching_arg_variadics")
      )");
 
     LUAU_REQUIRE_ERROR_COUNT(1, result);
-    if (FFlag::DebugLuauDeferredConstraintResolution)
+    if (FFlag::LuauSolverV2)
     {
         CHECK(R"(Type
     '(number) -> ()'
@@ -842,7 +850,7 @@ could not be converted into
 
 TEST_CASE_FIXTURE(Fixture, "union_of_functions_with_mismatching_result_variadics")
 {
-    ScopedFastFlag sff{FFlag::DebugLuauDeferredConstraintResolution, false};
+    DOES_NOT_PASS_NEW_SOLVER_GUARD();
 
     CheckResult result = check(R"(
         function f(x : () -> (number?, ...number))
@@ -861,7 +869,7 @@ could not be converted into
 
 TEST_CASE_FIXTURE(Fixture, "less_greedy_unification_with_union_types")
 {
-    if (!FFlag::DebugLuauDeferredConstraintResolution)
+    if (!FFlag::LuauSolverV2)
         return;
 
     CheckResult result = check(R"(
@@ -878,7 +886,7 @@ TEST_CASE_FIXTURE(Fixture, "less_greedy_unification_with_union_types")
 
 TEST_CASE_FIXTURE(Fixture, "less_greedy_unification_with_union_types_2")
 {
-    if (!FFlag::DebugLuauDeferredConstraintResolution)
+    if (!FFlag::LuauSolverV2)
         return;
 
     CheckResult result = check(R"(
@@ -910,7 +918,7 @@ TEST_CASE_FIXTURE(Fixture, "union_table_any_property")
 
 TEST_CASE_FIXTURE(Fixture, "union_function_any_args")
 {
-    ScopedFastFlag sff{FFlag::DebugLuauDeferredConstraintResolution, false};
+    DOES_NOT_PASS_NEW_SOLVER_GUARD();
 
     CheckResult result = check(R"(
         function f(sup : ((...any) -> (...any))?, sub : ((number) -> (...any)))
@@ -934,7 +942,7 @@ TEST_CASE_FIXTURE(Fixture, "optional_any")
 
 TEST_CASE_FIXTURE(Fixture, "generic_function_with_optional_arg")
 {
-    ScopedFastFlag sff{FFlag::DebugLuauDeferredConstraintResolution, false};
+    DOES_NOT_PASS_NEW_SOLVER_GUARD();
 
     CheckResult result = check(R"(
         function f<T>(x : T?) : {T}
@@ -968,7 +976,7 @@ TEST_CASE_FIXTURE(Fixture, "lookup_prop_of_intersection_containing_unions")
 
 TEST_CASE_FIXTURE(Fixture, "suppress_errors_for_prop_lookup_of_a_union_that_includes_error")
 {
-    ScopedFastFlag sff{FFlag::DebugLuauDeferredConstraintResolution, true};
+    ScopedFastFlag sff{FFlag::LuauSolverV2, true};
 
     registerHiddenTypes(&frontend);
 

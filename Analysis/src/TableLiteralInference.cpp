@@ -6,18 +6,11 @@
 #include "Luau/Type.h"
 #include "Luau/ToString.h"
 #include "Luau/TypeArena.h"
+#include "Luau/TypeUtils.h"
 #include "Luau/Unifier2.h"
 
 namespace Luau
 {
-
-static bool isLiteral(const AstExpr* expr)
-{
-    return (
-        expr->is<AstExprTable>() || expr->is<AstExprFunction>() || expr->is<AstExprConstantNumber>() || expr->is<AstExprConstantString>() ||
-        expr->is<AstExprConstantBool>() || expr->is<AstExprConstantNil>()
-    );
-}
 
 // A fast approximation of subTy <: superTy
 static bool fastIsSubtype(TypeId subTy, TypeId superTy)
@@ -381,14 +374,14 @@ TypeId matchLiteralType(
                 const TypeId* keyTy = astTypes->find(item.key);
                 LUAU_ASSERT(keyTy);
                 TypeId tKey = follow(*keyTy);
-                if (get<BlockedType>(tKey))
-                    toBlock.push_back(tKey);
-
+                LUAU_ASSERT(!is<BlockedType>(tKey));
                 const TypeId* propTy = astTypes->find(item.value);
                 LUAU_ASSERT(propTy);
                 TypeId tProp = follow(*propTy);
-                if (get<BlockedType>(tProp))
-                    toBlock.push_back(tProp);
+                LUAU_ASSERT(!is<BlockedType>(tProp));
+                // Populate expected types for non-string keys declared with [] (the code below will handle the case where they are strings)
+                if (!item.key->as<AstExprConstantString>() && expectedTableTy->indexer)
+                    (*astExpectedTypes)[item.key] = expectedTableTy->indexer->indexType;
             }
             else
                 LUAU_ASSERT(!"Unexpected");

@@ -17,6 +17,11 @@
 
 #include <string.h>
 
+LUAU_DYNAMIC_FASTFLAGVARIABLE(LuauStackLimit, false)
+
+// keep max stack allocation request under 1GB
+#define MAX_STACK_SIZE (int(1024 / sizeof(TValue)) * 1024 * 1024)
+
 /*
 ** {======================================================
 ** Error-recovery functions
@@ -176,6 +181,10 @@ static void correctstack(lua_State* L, TValue* oldstack)
 
 void luaD_reallocstack(lua_State* L, int newsize)
 {
+    // throw 'out of memory' error because space for a custom error message cannot be guaranteed here
+    if (DFFlag::LuauStackLimit && newsize > MAX_STACK_SIZE)
+        luaD_throw(L, LUA_ERRMEM);
+
     TValue* oldstack = L->stack;
     int realsize = newsize + EXTRA_STACK;
     LUAU_ASSERT(L->stack_last - L->stack == L->stacksize - EXTRA_STACK);
@@ -426,9 +435,9 @@ static void resume_handle(lua_State* L, void* ud)
     resume_continue(L);
 }
 
-static int resume_error(lua_State* L, const char* msg)
+static int resume_error(lua_State* L, const char* msg, int narg)
 {
-    L->top = L->ci->base;
+    L->top -= narg;
     setsvalue(L, L->top, luaS_new(L, msg));
     incr_top(L);
     return LUA_ERRRUN;
@@ -455,11 +464,11 @@ int lua_resume(lua_State* L, lua_State* from, int nargs)
 {
     int status;
     if (L->status != LUA_YIELD && L->status != LUA_BREAK && (L->status != 0 || L->ci != L->base_ci))
-        return resume_error(L, "cannot resume non-suspended coroutine");
+        return resume_error(L, "cannot resume non-suspended coroutine", nargs);
 
     L->nCcalls = from ? from->nCcalls : 0;
     if (L->nCcalls >= LUAI_MAXCCALLS)
-        return resume_error(L, "C stack overflow");
+        return resume_error(L, "C stack overflow", nargs);
 
     L->baseCcalls = ++L->nCcalls;
     L->isactive = true;
@@ -484,11 +493,11 @@ int lua_resumeerror(lua_State* L, lua_State* from)
 {
     int status;
     if (L->status != LUA_YIELD && L->status != LUA_BREAK && (L->status != 0 || L->ci != L->base_ci))
-        return resume_error(L, "cannot resume non-suspended coroutine");
+        return resume_error(L, "cannot resume non-suspended coroutine", 1);
 
     L->nCcalls = from ? from->nCcalls : 0;
     if (L->nCcalls >= LUAI_MAXCCALLS)
-        return resume_error(L, "C stack overflow");
+        return resume_error(L, "C stack overflow", 1);
 
     L->baseCcalls = ++L->nCcalls;
     L->isactive = true;

@@ -6,9 +6,9 @@
 #include "doctest.h"
 #include "Fixture.h"
 
-LUAU_FASTFLAG(LuauFixBindingForGlobalPos);
-
 using namespace Luau;
+
+LUAU_FASTFLAG(LuauDocumentationAtPosition)
 
 struct DocumentationSymbolFixture : BuiltinsFixture
 {
@@ -165,12 +165,52 @@ TEST_CASE_FIXTURE(DocumentationSymbolFixture, "table_overloaded_function_prop")
     CHECK_EQ(symbol, "@test/global/Foo.new/overload/(string) -> number");
 }
 
+TEST_CASE_FIXTURE(DocumentationSymbolFixture, "string_metatable_method")
+{
+    ScopedFastFlag sff{FFlag::LuauDocumentationAtPosition, true};
+    std::optional<DocumentationSymbol> symbol = getDocSymbol(
+        R"(
+        local x: string = "Foo"
+        x:rep(2)
+    )",
+        Position(2, 12)
+    );
+
+    CHECK_EQ(symbol, "@luau/global/string.rep");
+}
+
+TEST_CASE_FIXTURE(DocumentationSymbolFixture, "parent_class_method")
+{
+    ScopedFastFlag sff{FFlag::LuauDocumentationAtPosition, true};
+    loadDefinition(R"(
+        declare class Foo
+            function bar(self, x: string): number
+        end
+
+        declare class Bar extends Foo
+            function notbar(self, x: string): number
+        end
+    )");
+
+    std::optional<DocumentationSymbol> symbol = getDocSymbol(
+        R"(
+        local x: Bar = Bar.new()
+        x:bar("asdf")
+    )",
+        Position(2, 11)
+    );
+
+    CHECK_EQ(symbol, "@test/globaltype/Foo.bar");
+}
+
 TEST_SUITE_END();
 
 TEST_SUITE_BEGIN("AstQuery");
 
 TEST_CASE_FIXTURE(Fixture, "last_argument_function_call_type")
 {
+    DOES_NOT_PASS_NEW_SOLVER_GUARD();
+
     check(R"(
 local function foo() return 2 end
 local function bar(a: number) return -a end
@@ -351,7 +391,7 @@ TEST_CASE_FIXTURE(Fixture, "find_expr_ancestry")
 
 TEST_CASE_FIXTURE(BuiltinsFixture, "find_binding_at_position_global_start_of_file")
 {
-    ScopedFastFlag sff{FFlag::LuauFixBindingForGlobalPos, true};
+
     check("local x = string.char(1)");
     const Position pos(0, 12);
 

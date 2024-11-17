@@ -225,8 +225,8 @@ TEST_CASE("PathResolution")
 
     CHECK(resolvePath("../module", "") == "../module");
     CHECK(resolvePath("../../module", "") == "../../module");
-    CHECK(resolvePath("../module/..", "") == "..");
-    CHECK(resolvePath("../module/../..", "") == "../..");
+    CHECK(resolvePath("../module/..", "") == "../");
+    CHECK(resolvePath("../module/../..", "") == "../../");
 
     CHECK(resolvePath("../dependency", prefix + "Users/modules/module.luau") == prefix + "Users/dependency");
     CHECK(resolvePath("../dependency/", prefix + "Users/modules/module.luau") == prefix + "Users/dependency");
@@ -308,6 +308,22 @@ TEST_CASE_FIXTURE(ReplWithPathFixture, "RequireInitLua")
     assertOutputContainsAll({"true", "result from init.lua"});
 }
 
+TEST_CASE_FIXTURE(ReplWithPathFixture, "RequireWithFileAmbiguity")
+{
+    std::string ambiguousPath = getLuauDirectory(PathType::Relative) + "/tests/require/without_config/ambiguous_file_requirer";
+
+    runProtectedRequire(ambiguousPath);
+    assertOutputContainsAll({"false", "require path could not be resolved to a unique file"});
+}
+
+TEST_CASE_FIXTURE(ReplWithPathFixture, "RequireWithDirectoryAmbiguity")
+{
+    std::string ambiguousPath = getLuauDirectory(PathType::Relative) + "/tests/require/without_config/ambiguous_directory_requirer";
+
+    runProtectedRequire(ambiguousPath);
+    assertOutputContainsAll({"false", "require path could not be resolved to a unique file"});
+}
+
 TEST_CASE_FIXTURE(ReplWithPathFixture, "CheckCacheAfterRequireLuau")
 {
     std::string relativePath = getLuauDirectory(PathType::Relative) + "/tests/require/without_config/module";
@@ -384,6 +400,13 @@ TEST_CASE_FIXTURE(ReplWithPathFixture, "CheckCacheAfterRequireInitLua")
     REQUIRE_FALSE_MESSAGE(lua_isnil(L, -1), "Cache did not contain module result");
 }
 
+TEST_CASE_FIXTURE(ReplWithPathFixture, "CheckCachedResult")
+{
+    std::string relativePath = getLuauDirectory(PathType::Relative) + "/tests/require/without_config/validate_cache";
+    runProtectedRequire(relativePath);
+    assertOutputContainsAll({"true"});
+}
+
 TEST_CASE_FIXTURE(ReplWithPathFixture, "LoadStringRelative")
 {
     runCode(L, "return pcall(function() return loadstring(\"require('a/relative/path')\")() end)");
@@ -401,25 +424,18 @@ TEST_CASE_FIXTURE(ReplWithPathFixture, "RequireAbsolutePath")
     assertOutputContainsAll({"false", "cannot require an absolute path"});
 }
 
-TEST_CASE_FIXTURE(ReplWithPathFixture, "PathsArrayRelativePath")
+TEST_CASE_FIXTURE(ReplWithPathFixture, "RequireUnprefixedPath")
 {
-    std::string path = getLuauDirectory(PathType::Relative) + "/tests/require/with_config/src/requirer";
+    std::string path = "an/unprefixed/path";
     runProtectedRequire(path);
-    assertOutputContainsAll({"true", "result from library"});
+    assertOutputContainsAll({"false", "require path must start with a valid prefix: ./, ../, or @"});
 }
 
-TEST_CASE_FIXTURE(ReplWithPathFixture, "PathsArrayExplicitlyRelativePath")
+TEST_CASE_FIXTURE(ReplWithPathFixture, "RequirePathWithExtension")
 {
-    std::string path = getLuauDirectory(PathType::Relative) + "/tests/require/with_config/src/fail_requirer";
+    std::string path = getLuauDirectory(PathType::Relative) + "/tests/require/without_config/dependency.luau";
     runProtectedRequire(path);
-    assertOutputContainsAll({"false", "error requiring module"});
-}
-
-TEST_CASE_FIXTURE(ReplWithPathFixture, "PathsArrayFromParent")
-{
-    std::string path = getLuauDirectory(PathType::Relative) + "/tests/require/with_config/src/global_library_requirer";
-    runProtectedRequire(path);
-    assertOutputContainsAll({"true", "result from global_library"});
+    assertOutputContainsAll({"false", "error requiring module: consider removing the file extension"});
 }
 
 TEST_CASE_FIXTURE(ReplWithPathFixture, "RequirePathWithAlias")
@@ -436,6 +452,12 @@ TEST_CASE_FIXTURE(ReplWithPathFixture, "RequirePathWithParentAlias")
     assertOutputContainsAll({"true", "result from other_dependency"});
 }
 
+TEST_CASE_FIXTURE(ReplWithPathFixture, "RequirePathWithAliasPointingToDirectory")
+{
+    std::string path = getLuauDirectory(PathType::Relative) + "/tests/require/with_config/src/directory_alias_requirer";
+    runProtectedRequire(path);
+    assertOutputContainsAll({"true", "result from subdirectory_dependency"});
+}
 
 TEST_CASE_FIXTURE(ReplWithPathFixture, "RequireAliasThatDoesNotExist")
 {
