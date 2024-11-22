@@ -296,6 +296,7 @@ struct lua_State
     taskSchedulerInfo* taskScheduler; // task scheduler addon
     lua_State* parent = nullptr; // parent state (for reverse traversal)
     unsigned char storage = 0; // storage for custom shared data
+    unsigned char nogc = 0; // disable GC'ing this state
 
     Table* gt;           // table of globals
     UpVal* openupval;    // list of open upvalues in this stack
