@@ -6,6 +6,7 @@
 #include "Luau/ControlFlow.h"
 #include "Luau/DenseHash.h"
 #include "Luau/Def.h"
+#include "Luau/NotNull.h"
 #include "Luau/Symbol.h"
 #include "Luau/TypedAllocator.h"
 
@@ -48,13 +49,13 @@ struct DataFlowGraph
     const RefinementKey* getRefinementKey(const AstExpr* expr) const;
 
 private:
-    DataFlowGraph() = default;
+    DataFlowGraph(NotNull<DefArena> defArena, NotNull<RefinementKeyArena> keyArena);
 
     DataFlowGraph(const DataFlowGraph&) = delete;
     DataFlowGraph& operator=(const DataFlowGraph&) = delete;
 
-    DefArena defArena;
-    RefinementKeyArena keyArena;
+    NotNull<DefArena> defArena;
+    NotNull<RefinementKeyArena> keyArena;
 
     DenseHashMap<const AstExpr*, const Def*> astDefs{nullptr};
 
@@ -84,7 +85,6 @@ struct DfgScope
 
     DfgScope* parent;
     ScopeType scopeType;
-    Location location;
 
     using Bindings = DenseHashMap<Symbol, const Def*>;
     using Props = DenseHashMap<const Def*, std::unordered_map<std::string, const Def*>>;
@@ -111,30 +111,22 @@ using ScopeStack = std::vector<DfgScope*>;
 
 struct DataFlowGraphBuilder
 {
-    static DataFlowGraph build(AstStatBlock* root, NotNull<struct InternalErrorReporter> handle);
-
-    /**
-     * This method is identical to the build method above, but returns a pair of dfg, scopes as the data flow graph
-     * here is intended to live on the module between runs of typechecking. Before, the DFG only needed to live as
-     * long as the typecheck, but in a world with incremental typechecking, we need the information on the dfg to incrementally
-     * typecheck small fragments of code.
-     * @param block - pointer to the ast to build the dfg for
-     * @param handle - for raising internal errors while building the dfg
-     */
-    static std::pair<std::shared_ptr<DataFlowGraph>, std::vector<std::unique_ptr<DfgScope>>> buildShared(
+    static DataFlowGraph build(
         AstStatBlock* block,
-        NotNull<InternalErrorReporter> handle
+        NotNull<DefArena> defArena,
+        NotNull<RefinementKeyArena> keyArena,
+        NotNull<struct InternalErrorReporter> handle
     );
 
 private:
-    DataFlowGraphBuilder() = default;
+    DataFlowGraphBuilder(NotNull<DefArena> defArena, NotNull<RefinementKeyArena> keyArena);
 
     DataFlowGraphBuilder(const DataFlowGraphBuilder&) = delete;
     DataFlowGraphBuilder& operator=(const DataFlowGraphBuilder&) = delete;
 
     DataFlowGraph graph;
-    NotNull<DefArena> defArena{&graph.defArena};
-    NotNull<RefinementKeyArena> keyArena{&graph.keyArena};
+    NotNull<DefArena> defArena;
+    NotNull<RefinementKeyArena> keyArena;
 
     struct InternalErrorReporter* handle = nullptr;
 
@@ -156,7 +148,7 @@ private:
     DenseHashMap<Symbol, FunctionCapture> captures{Symbol{}};
     void resolveCaptures();
 
-    DfgScope* makeChildScope(Location loc, DfgScope::ScopeType scopeType = DfgScope::Linear);
+    DfgScope* makeChildScope(DfgScope::ScopeType scopeType = DfgScope::Linear);
 
     void join(DfgScope* p, DfgScope* a, DfgScope* b);
     void joinBindings(DfgScope* p, const DfgScope& a, const DfgScope& b);

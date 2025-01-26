@@ -25,6 +25,7 @@
 static const char* mainModuleName = "MainModule";
 
 LUAU_FASTFLAG(LuauSolverV2);
+LUAU_FASTFLAG(LuauVector2Constructor)
 LUAU_FASTFLAG(DebugLuauLogSolverToJsonFile)
 
 LUAU_FASTFLAGVARIABLE(DebugLuauForceAllNewSolverTests);
@@ -562,12 +563,14 @@ void Fixture::validateErrors(const std::vector<Luau::TypeError>& errors)
     }
 }
 
-LoadDefinitionFileResult Fixture::loadDefinition(const std::string& source)
+LoadDefinitionFileResult Fixture::loadDefinition(const std::string& source, bool forAutocomplete)
 {
-    unfreeze(frontend.globals.globalTypes);
-    LoadDefinitionFileResult result =
-        frontend.loadDefinitionFile(frontend.globals, frontend.globals.globalScope, source, "@test", /* captureComments */ false);
-    freeze(frontend.globals.globalTypes);
+    GlobalTypes& globals = forAutocomplete ? frontend.globalsForAutocomplete : frontend.globals;
+    unfreeze(globals.globalTypes);
+    LoadDefinitionFileResult result = frontend.loadDefinitionFile(
+        globals, globals.globalScope, source, "@test", /* captureComments */ false, /* typecheckForAutocomplete */ forAutocomplete
+    );
+    freeze(globals.globalTypes);
 
     if (result.module)
         dumpErrors(result.module);
@@ -578,6 +581,8 @@ LoadDefinitionFileResult Fixture::loadDefinition(const std::string& source)
 BuiltinsFixture::BuiltinsFixture(bool prepareAutocomplete)
     : Fixture(prepareAutocomplete)
 {
+    ScopedFastFlag luauVector2Constructor{FFlag::LuauVector2Constructor, true};
+
     Luau::unfreeze(frontend.globals.globalTypes);
     Luau::unfreeze(frontend.globalsForAutocomplete.globalTypes);
 

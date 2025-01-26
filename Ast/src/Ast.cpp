@@ -3,8 +3,6 @@
 
 #include "Luau/Common.h"
 
-LUAU_FASTFLAG(LuauNativeAttribute)
-
 namespace Luau
 {
 
@@ -239,8 +237,6 @@ void AstExprFunction::visit(AstVisitor* visitor)
 
 bool AstExprFunction::hasNativeAttribute() const
 {
-    LUAU_ASSERT(FFlag::LuauNativeAttribute);
-
     for (const auto attribute : attributes)
     {
         if (attribute->type == AstAttr::Type::Native)
@@ -1155,10 +1151,7 @@ void AstTypePackGeneric::visit(AstVisitor* visitor)
 
 bool isLValue(const AstExpr* expr)
 {
-    return expr->is<AstExprLocal>()
-        || expr->is<AstExprGlobal>()
-        || expr->is<AstExprIndexName>()
-        || expr->is<AstExprIndexExpr>();
+    return expr->is<AstExprLocal>() || expr->is<AstExprGlobal>() || expr->is<AstExprIndexName>() || expr->is<AstExprIndexExpr>();
 }
 
 AstName getIdentifier(AstExpr* node)

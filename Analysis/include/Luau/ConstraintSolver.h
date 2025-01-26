@@ -59,6 +59,25 @@ struct HashInstantiationSignature
     size_t operator()(const InstantiationSignature& signature) const;
 };
 
+
+struct TablePropLookupResult
+{
+    // What types are we blocked on for determining this type?
+    std::vector<TypeId> blockedTypes;
+    // The type of the property (if we were able to determine it).
+    std::optional<TypeId> propType;
+    // Whether or not this is _definitely_ derived as the result of an indexer.
+    // We use this to determine whether or not code like:
+    //
+    //   t.lol = nil;
+    //
+    // ... is legal. If `t: { [string]: ~nil }` then this is legal as
+    // there's no guarantee on whether "lol" specifically exists.
+    // However, if `t: { lol: ~nil }`, then we cannot allow assignment as
+    // that would remove "lol" from the table entirely.
+    bool isIndex = false;
+};
+
 struct ConstraintSolver
 {
     NotNull<TypeArena> arena;
@@ -147,7 +166,7 @@ struct ConstraintSolver
      **/
     void finalizeTypeFunctions();
 
-    bool isDone();
+    bool isDone() const;
 
 private:
     /**
@@ -211,7 +230,7 @@ public:
     // for a, ... in next_function, t, ... do
     bool tryDispatchIterableFunction(TypeId nextTy, TypeId tableTy, const IterableConstraint& c, NotNull<const Constraint> constraint);
 
-    std::pair<std::vector<TypeId>, std::optional<TypeId>> lookupTableProp(
+    TablePropLookupResult lookupTableProp(
         NotNull<const Constraint> constraint,
         TypeId subjectType,
         const std::string& propName,
@@ -219,7 +238,8 @@ public:
         bool inConditional = false,
         bool suppressSimplification = false
     );
-    std::pair<std::vector<TypeId>, std::optional<TypeId>> lookupTableProp(
+
+    TablePropLookupResult lookupTableProp(
         NotNull<const Constraint> constraint,
         TypeId subjectType,
         const std::string& propName,
@@ -278,10 +298,10 @@ public:
     // FIXME: This use of a boolean for the return result is an appalling
     // interface.
     bool blockOnPendingTypes(TypeId target, NotNull<const Constraint> constraint);
-    bool blockOnPendingTypes(TypePackId target, NotNull<const Constraint> constraint);
+    bool blockOnPendingTypes(TypePackId targetPack, NotNull<const Constraint> constraint);
 
     void unblock(NotNull<const Constraint> progressed);
-    void unblock(TypeId progressed, Location location);
+    void unblock(TypeId ty, Location location);
     void unblock(TypePackId progressed, Location location);
     void unblock(const std::vector<TypeId>& types, Location location);
     void unblock(const std::vector<TypePackId>& packs, Location location);
@@ -316,7 +336,7 @@ public:
      * @param location the location where the require is taking place; used for
      * error locations.
      **/
-    TypeId resolveModule(const ModuleInfo& module, const Location& location);
+    TypeId resolveModule(const ModuleInfo& info, const Location& location);
 
     void reportError(TypeErrorData&& data, const Location& location);
     void reportError(TypeError e);
@@ -400,6 +420,11 @@ public:
     void throwUserCancelError() const;
 
     ToStringOptions opts;
+
+    void fillInDiscriminantTypes(
+        NotNull<const Constraint> constraint,
+        const std::vector<std::optional<TypeId>>& discriminantTypes
+    );
 };
 
 void dump(NotNull<Scope> rootScope, struct ToStringOptions& opts);

@@ -199,7 +199,7 @@ typedef struct global_State
 
     struct lua_State* mainthread;
     UpVal uvhead;                                    // head of double-linked list of all open upvalues
-    struct Table* mt[LUA_T_COUNT];                   // metatables for basic types
+    struct LuaTable* mt[LUA_T_COUNT];                   // metatables for basic types
     TString* ttname[LUA_T_COUNT];       // names for basic types
     TString* tmname[TM_N];             // array with tag-method names
 
@@ -218,7 +218,7 @@ typedef struct global_State
     lua_ExecutionCallbacks ecb;
 
     void (*udatagc[LUA_UTAG_LIMIT])(lua_State*, void*); // for each userdata tag, a gc callback to be called immediately before freeing memory
-    Table* udatamt[LUA_UTAG_LIMIT]; // metatables for tagged userdata
+    LuaTable* udatamt[LUA_UTAG_LIMIT]; // metatables for tagged userdata
 
     TString* lightuserdataname[LUA_LUTAG_LIMIT]; // names for tagged lightuserdata
 
@@ -298,7 +298,7 @@ struct lua_State
     unsigned char storage = 0; // storage for custom shared data
     unsigned char nogc = 0; // disable GC'ing this state
 
-    Table* gt;           // table of globals
+    LuaTable* gt;           // table of globals
     UpVal* openupval;    // list of open upvalues in this stack
     GCObject* gclist;
 
@@ -317,7 +317,7 @@ union GCObject
     struct TString ts;
     struct Udata u;
     struct Closure cl;
-    struct Table h;
+    struct LuaTable h;
     struct Proto p;
     struct UpVal uv;
     struct lua_State th; // thread

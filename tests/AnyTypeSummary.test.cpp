@@ -18,6 +18,9 @@ LUAU_FASTFLAG(LuauSolverV2)
 LUAU_FASTFLAG(DebugLuauFreezeArena)
 LUAU_FASTFLAG(DebugLuauMagicTypes)
 LUAU_FASTFLAG(StudioReportLuauAny2)
+LUAU_FASTFLAG(LuauTrackInteriorFreeTypesOnScope)
+LUAU_FASTFLAG(LuauAlwaysFillInFunctionCallDiscriminantTypes)
+LUAU_FASTFLAG(LuauRemoveNotAnyHack)
 
 
 struct ATSFixture : BuiltinsFixture
@@ -97,7 +100,10 @@ end
 
     LUAU_ASSERT(module->ats.typeInfo.size() == 3);
     LUAU_ASSERT(module->ats.typeInfo[1].code == Pattern::TypePk);
-    LUAU_ASSERT(module->ats.typeInfo[0].node == "local function fallible(t: number): ...any\n if t > 0 then\n  return true, t\n end\n return false, 'must be positive'\nend");
+    LUAU_ASSERT(
+        module->ats.typeInfo[0].node ==
+        "local function fallible(t: number): ...any\n if t > 0 then\n  return true, t\n end\n return false, 'must be positive'\nend"
+    );
 }
 
 TEST_CASE_FIXTURE(ATSFixture, "typepacks_no_ret")
@@ -111,7 +117,7 @@ TEST_CASE_FIXTURE(ATSFixture, "typepacks_no_ret")
 -- TODO: if partially typed, we'd want to know too
 local function fallible(t: number)
 	if t > 0 then
-		return true, t 
+		return true, t
 	end
 	return false, "must be positive"
 end
@@ -406,6 +412,8 @@ TEST_CASE_FIXTURE(ATSFixture, "CannotExtendTable")
     ScopedFastFlag sff[] = {
         {FFlag::LuauSolverV2, true},
         {FFlag::StudioReportLuauAny2, true},
+        {FFlag::LuauAlwaysFillInFunctionCallDiscriminantTypes, true},
+        {FFlag::LuauRemoveNotAnyHack, true},
     };
 
     fileResolver.source["game/Gui/Modules/A"] = R"(
@@ -421,7 +429,7 @@ end
 )";
 
     CheckResult result1 = frontend.check("game/Gui/Modules/A");
-    LUAU_REQUIRE_ERROR_COUNT(3, result1);
+    LUAU_REQUIRE_ERROR_COUNT(1, result1);
 
     ModulePtr module = frontend.moduleResolver.getModule("game/Gui/Modules/A");
 
@@ -498,6 +506,8 @@ TEST_CASE_FIXTURE(ATSFixture, "racing_collision_2")
     ScopedFastFlag sff[] = {
         {FFlag::LuauSolverV2, true},
         {FFlag::StudioReportLuauAny2, true},
+        {FFlag::LuauAlwaysFillInFunctionCallDiscriminantTypes, true},
+        {FFlag::LuauRemoveNotAnyHack, true},
     };
 
     fileResolver.source["game/Gui/Modules/A"] = R"(
@@ -561,7 +571,7 @@ initialize()
 )";
 
     CheckResult result1 = frontend.check("game/Gui/Modules/A");
-    LUAU_REQUIRE_ERROR_COUNT(5, result1);
+    LUAU_REQUIRE_ERROR_COUNT(3, result1);
 
     ModulePtr module = frontend.moduleResolver.getModule("game/Gui/Modules/A");
 
@@ -581,6 +591,9 @@ TEST_CASE_FIXTURE(ATSFixture, "racing_spawning_1")
     ScopedFastFlag sff[] = {
         {FFlag::LuauSolverV2, true},
         {FFlag::StudioReportLuauAny2, true},
+        // Previously we'd report an error because number <: 'a is not a
+        // supertype.
+        {FFlag::LuauTrackInteriorFreeTypesOnScope, true}
     };
 
     fileResolver.source["game/Gui/Modules/A"] = R"(
@@ -632,7 +645,7 @@ initialize()
 )";
 
     CheckResult result1 = frontend.check("game/Gui/Modules/A");
-    LUAU_REQUIRE_ERROR_COUNT(5, result1);
+    LUAU_REQUIRE_ERROR_COUNT(4, result1);
 
     ModulePtr module = frontend.moduleResolver.getModule("game/Gui/Modules/A");
 
@@ -911,7 +924,7 @@ TEST_CASE_FIXTURE(ATSFixture, "type_alias_any")
 
     fileResolver.source["game/Gui/Modules/A"] = R"(
     type Clear = any
-    local z: Clear = "zip"  
+    local z: Clear = "zip"
 )";
 
     CheckResult result1 = frontend.check("game/Gui/Modules/A");
@@ -938,7 +951,7 @@ TEST_CASE_FIXTURE(ATSFixture, "multi_module_any")
     fileResolver.source["game/B"] = R"(
     local MyFunc = require(script.Parent.A)
     type Clear = any
-    local z: Clear = "zip"  
+    local z: Clear = "zip"
 )";
 
     fileResolver.source["game/Gui/Modules/A"] = R"(
@@ -972,7 +985,7 @@ TEST_CASE_FIXTURE(ATSFixture, "cast_on_cyclic_req")
     fileResolver.source["game/B"] = R"(
     local MyFunc = require(script.Parent.A) :: any
     type Clear = any
-    local z: Clear = "zip"  
+    local z: Clear = "zip"
 )";
 
     CheckResult result = frontend.check("game/B");

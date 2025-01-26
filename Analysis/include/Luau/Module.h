@@ -16,6 +16,8 @@
 #include <unordered_map>
 #include <optional>
 
+LUAU_FASTFLAG(LuauIncrementalAutocompleteCommentDetection)
+
 namespace Luau
 {
 
@@ -55,6 +57,7 @@ struct SourceModule
     }
 };
 
+bool isWithinComment(const std::vector<Comment>& commentLocations, Position pos);
 bool isWithinComment(const SourceModule& sourceModule, Position pos);
 bool isWithinComment(const ParseResult& result, Position pos);
 
@@ -135,9 +138,11 @@ struct Module
 
     TypePackId returnType = nullptr;
     std::unordered_map<Name, TypeFun> exportedTypeBindings;
-    // We also need to keep DFG data alive between runs
-    std::shared_ptr<DataFlowGraph> dataFlowGraph = nullptr;
-    std::vector<std::unique_ptr<DfgScope>> dfgScopes;
+
+    // Arenas related to the DFG must persist after the DFG no longer exists, as
+    // Module objects maintain raw pointers to objects in these arenas.
+    DefArena defArena;
+    RefinementKeyArena keyArena;
 
     bool hasModuleScope() const;
     ScopePtr getModuleScope() const;

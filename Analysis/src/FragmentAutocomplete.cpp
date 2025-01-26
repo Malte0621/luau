@@ -27,7 +27,6 @@ LUAU_FASTINT(LuauTypeInferRecursionLimit);
 LUAU_FASTINT(LuauTypeInferIterationLimit);
 LUAU_FASTINT(LuauTarjanChildLimit)
 LUAU_FASTFLAG(LuauAllowFragmentParsing);
-LUAU_FASTFLAG(LuauStoreDFGOnModule2);
 LUAU_FASTFLAG(LuauAutocompleteRefactorsForIncrementalAutocomplete)
 
 namespace
@@ -89,6 +88,25 @@ FragmentAutocompleteAncestryResult findAncestryForFragmentParse(AstStatBlock* ro
                     {
                         localStack.push_back(locFun->name);
                         localMap[locFun->name->name] = locFun->name;
+                        if (locFun->location.contains(cursorPos))
+                        {
+                            for (AstLocal* loc : locFun->func->args)
+                            {
+                                localStack.push_back(loc);
+                                localMap[loc->name] = loc;
+                            }
+                        }
+                    }
+                    else if (auto globFun = stat->as<AstStatFunction>())
+                    {
+                        if (globFun->location.contains(cursorPos))
+                        {
+                            for (AstLocal* loc : globFun->func->args)
+                            {
+                                localStack.push_back(loc);
+                                localMap[loc->name] = loc;
+                            }
+                        }
                     }
                 }
             }
@@ -103,19 +121,13 @@ FragmentAutocompleteAncestryResult findAncestryForFragmentParse(AstStatBlock* ro
 
 /**
  * Get document offsets is a function that takes a source text document as well as a start position and end position(line, column) in that
- * document and attempts to get the concrete text between those points. It returns a tuple of:
+ * document and attempts to get the concrete text between those points. It returns a pair of:
  * - start offset that represents an index in the source `char*` corresponding to startPos
  * - length, that represents how many more bytes to read to get to endPos.
- * - cursorPos, that represents the position of the cursor relative to the start offset.
- * Example - your document is "foo bar baz" and getDocumentOffsets is passed (0, 4), (0, 7), (0, 8). This function returns the tuple {3, 5,
- * Position{0, 4}}, which corresponds to the string " bar "
+ * Example - your document is "foo bar baz" and getDocumentOffsets is passed (0, 4), (0, 8). This function returns the pair {3, 5}
+ * which corresponds to the string " bar "
  */
-std::tuple<size_t, size_t, Position> getDocumentOffsets(
-    const std::string_view& src,
-    const Position& startPos,
-    Position cursorPos,
-    const Position& endPos
-)
+std::pair<size_t, size_t> getDocumentOffsets(const std::string_view& src, const Position& startPos, const Position& endPos)
 {
     size_t lineCount = 0;
     size_t colCount = 0;
@@ -124,11 +136,7 @@ std::tuple<size_t, size_t, Position> getDocumentOffsets(
     size_t startOffset = 0;
     size_t endOffset = 0;
     bool foundStart = false;
-    bool foundCursor = false;
     bool foundEnd = false;
-
-    unsigned int colOffsetFromStart = 0;
-    unsigned int lineOffsetFromStart = 0;
 
     for (char c : src)
     {
@@ -141,15 +149,11 @@ std::tuple<size_t, size_t, Position> getDocumentOffsets(
             startOffset = docOffset;
         }
 
-        if (cursorPos.line == lineCount && cursorPos.column == colCount)
-        {
-            foundCursor = true;
-            cursorPos = {lineOffsetFromStart, colOffsetFromStart};
-        }
-
         if (endPos.line == lineCount && endPos.column == colCount)
         {
             endOffset = docOffset;
+            while (endOffset < src.size() && src[endOffset] != '\n')
+                endOffset++;
             foundEnd = true;
         }
 
@@ -162,18 +166,11 @@ std::tuple<size_t, size_t, Position> getDocumentOffsets(
 
         if (c == '\n')
         {
-            if (foundStart)
-            {
-                lineOffsetFromStart++;
-                colOffsetFromStart = 0;
-            }
             lineCount++;
             colCount = 0;
         }
         else
         {
-            if (foundStart)
-                colOffsetFromStart++;
             colCount++;
         }
         docOffset++;
@@ -182,12 +179,9 @@ std::tuple<size_t, size_t, Position> getDocumentOffsets(
     if (foundStart && !foundEnd)
         endOffset = src.length();
 
-    if (foundStart && !foundCursor)
-        cursorPos = {lineOffsetFromStart, colOffsetFromStart};
-
     size_t min = std::min(startOffset, endOffset);
     size_t len = std::max(startOffset, endOffset) - min;
-    return {min, len, cursorPos};
+    return {min, len};
 }
 
 ScopePtr findClosestScope(const ModulePtr& module, const AstStat* nearestStatement)
@@ -206,7 +200,7 @@ ScopePtr findClosestScope(const ModulePtr& module, const AstStat* nearestStateme
     return closest;
 }
 
-FragmentParseResult parseFragment(
+std::optional<FragmentParseResult> parseFragment(
     const SourceModule& srcModule,
     std::string_view src,
     const Position& cursorPos,
@@ -214,10 +208,6 @@ FragmentParseResult parseFragment(
 )
 {
     FragmentAutocompleteAncestryResult result = findAncestryForFragmentParse(srcModule.root, cursorPos);
-    ParseOptions opts;
-    opts.allowDeclarationSyntax = false;
-    opts.captureComments = true;
-    opts.parseFragment = FragmentParseResumeSettings{std::move(result.localMap), std::move(result.localStack)};
     AstStat* nearestStatement = result.nearestStatement;
 
     const Location& rootSpan = srcModule.root->location;
@@ -234,37 +224,44 @@ FragmentParseResult parseFragment(
     // If we added to the end of the sourceModule, use the end of the nearest location
     if (appended && multiline)
         startPos = nearestStatement->location.end;
-    // Statement spans one line && cursorPos is on a different line
-    else if (!multiline && cursorPos.line != nearestStatement->location.end.line)
-        startPos = nearestStatement->location.end;
+    // Statement spans one line && cursorPos is either on the same line or after
+    else if (!multiline && cursorPos.line >= nearestStatement->location.end.line)
+        startPos = nearestStatement->location.begin;
     else if (multiline && nearestStatement->location.end.line < cursorPos.line)
         startPos = nearestStatement->location.end;
     else
         startPos = nearestStatement->location.begin;
 
-    auto [offsetStart, parseLength, cursorInFragment] = getDocumentOffsets(src, startPos, cursorPos, endPos);
-
-
+    auto [offsetStart, parseLength] = getDocumentOffsets(src, startPos, endPos);
     const char* srcStart = src.data() + offsetStart;
     std::string_view dbg = src.substr(offsetStart, parseLength);
     const std::shared_ptr<AstNameTable>& nameTbl = srcModule.names;
     FragmentParseResult fragmentResult;
     fragmentResult.fragmentToParse = std::string(dbg.data(), parseLength);
     // For the duration of the incremental parse, we want to allow the name table to re-use duplicate names
+
+    ParseOptions opts;
+    opts.allowDeclarationSyntax = false;
+    opts.captureComments = true;
+    opts.parseFragment = FragmentParseResumeSettings{std::move(result.localMap), std::move(result.localStack), startPos};
     ParseResult p = Luau::Parser::parse(srcStart, parseLength, *nameTbl, *fragmentResult.alloc.get(), opts);
+    // This means we threw a ParseError and we should decline to offer autocomplete here.
+    if (p.root == nullptr)
+        return std::nullopt;
 
     std::vector<AstNode*> fabricatedAncestry = std::move(result.ancestry);
 
     // Get the ancestry for the fragment at the offset cursor position.
     // Consumers have the option to request with fragment end position, so we cannot just use the end position of our parse result as the
     // cursor position. Instead, use the cursor position calculated as an offset from our start position.
-    std::vector<AstNode*> fragmentAncestry = findAncestryAtPositionForAutocomplete(p.root, cursorInFragment);
+    std::vector<AstNode*> fragmentAncestry = findAncestryAtPositionForAutocomplete(p.root, cursorPos);
     fabricatedAncestry.insert(fabricatedAncestry.end(), fragmentAncestry.begin(), fragmentAncestry.end());
     if (nearestStatement == nullptr)
         nearestStatement = p.root;
     fragmentResult.root = std::move(p.root);
     fragmentResult.ancestry = std::move(fabricatedAncestry);
     fragmentResult.nearestStatement = nearestStatement;
+    fragmentResult.commentLocations = std::move(p.commentLocations);
     return fragmentResult;
 }
 
@@ -300,6 +297,7 @@ struct MixedModeIncrementalTCDefFinder : public AstVisitor
         referencedLocalDefs.push_back({local->local, local});
         return true;
     }
+
     // ast defs is just a mapping from expr -> def in general
     // will get built up by the dfg builder
 
@@ -372,7 +370,8 @@ FragmentTypeCheckResult typecheckFragment_(
     TypeFunctionRuntime typeFunctionRuntime(iceHandler, NotNull{&limits});
 
     /// Create a DataFlowGraph just for the surrounding context
-    auto dfg = DataFlowGraphBuilder::build(root, iceHandler);
+    DataFlowGraph dfg = DataFlowGraphBuilder::build(root, NotNull{&incrementalModule->defArena}, NotNull{&incrementalModule->keyArena}, iceHandler);
+
     SimplifierPtr simplifier = newSimplifier(NotNull{&incrementalModule->internalTypes}, frontend.builtinTypes);
 
     FrontendModuleResolver& resolver = getModuleResolver(frontend, opts);
@@ -450,7 +449,7 @@ FragmentTypeCheckResult typecheckFragment_(
 }
 
 
-FragmentTypeCheckResult typecheckFragment(
+std::pair<FragmentTypeCheckStatus, FragmentTypeCheckResult> typecheckFragment(
     Frontend& frontend,
     const ModuleName& moduleName,
     const Position& cursorPos,
@@ -474,13 +473,22 @@ FragmentTypeCheckResult typecheckFragment(
         return {};
     }
 
-    FragmentParseResult parseResult = parseFragment(*sourceModule, src, cursorPos, fragmentEndPosition);
+    auto tryParse = parseFragment(*sourceModule, src, cursorPos, fragmentEndPosition);
+
+    if (!tryParse)
+        return {FragmentTypeCheckStatus::SkipAutocomplete, {}};
+
+    FragmentParseResult& parseResult = *tryParse;
+
+    if (isWithinComment(parseResult.commentLocations, fragmentEndPosition.value_or(cursorPos)))
+        return {FragmentTypeCheckStatus::SkipAutocomplete, {}};
+
     FrontendOptions frontendOptions = opts.value_or(frontend.options);
     const ScopePtr& closestScope = findClosestScope(module, parseResult.nearestStatement);
     FragmentTypeCheckResult result =
         typecheckFragment_(frontend, parseResult.root, module, closestScope, cursorPos, std::move(parseResult.alloc), frontendOptions);
     result.ancestry = std::move(parseResult.ancestry);
-    return result;
+    return {FragmentTypeCheckStatus::Success, result};
 }
 
 
@@ -495,7 +503,6 @@ FragmentAutocompleteResult fragmentAutocomplete(
 )
 {
     LUAU_ASSERT(FFlag::LuauAllowFragmentParsing);
-    LUAU_ASSERT(FFlag::LuauStoreDFGOnModule2);
     LUAU_ASSERT(FFlag::LuauAutocompleteRefactorsForIncrementalAutocomplete);
 
     const SourceModule* sourceModule = frontend.getSourceModule(moduleName);
@@ -505,7 +512,15 @@ FragmentAutocompleteResult fragmentAutocomplete(
         return {};
     }
 
-    auto tcResult = typecheckFragment(frontend, moduleName, cursorPosition, opts, src, fragmentEndPosition);
+    // If the cursor is within a comment in the stale source module we should avoid providing a recommendation
+    if (isWithinComment(*sourceModule, fragmentEndPosition.value_or(cursorPosition)))
+        return {};
+
+    auto [tcStatus, tcResult] = typecheckFragment(frontend, moduleName, cursorPosition, opts, src, fragmentEndPosition);
+    if (tcStatus == FragmentTypeCheckStatus::SkipAutocomplete)
+        return {};
+
+    auto globalScope = (opts && opts->forAutocomplete) ? frontend.globalsForAutocomplete.globalScope.get() : frontend.globals.globalScope.get();
 
     TypeArena arenaForFragmentAutocomplete;
     auto result = Luau::autocomplete_(
@@ -513,7 +528,7 @@ FragmentAutocompleteResult fragmentAutocomplete(
         frontend.builtinTypes,
         &arenaForFragmentAutocomplete,
         tcResult.ancestry,
-        frontend.globals.globalScope.get(),
+        globalScope,
         tcResult.freshScope,
         cursorPosition,
         frontend.fileResolver,

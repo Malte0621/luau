@@ -396,12 +396,14 @@ TypePackId* SubtypingEnvironment::getMappedPackBounds(TypePackId tp)
 Subtyping::Subtyping(
     NotNull<BuiltinTypes> builtinTypes,
     NotNull<TypeArena> typeArena,
+    NotNull<Simplifier> simplifier,
     NotNull<Normalizer> normalizer,
     NotNull<TypeFunctionRuntime> typeFunctionRuntime,
     NotNull<InternalErrorReporter> iceReporter
 )
     : builtinTypes(builtinTypes)
     , arena(typeArena)
+    , simplifier(simplifier)
     , normalizer(normalizer)
     , typeFunctionRuntime(typeFunctionRuntime)
     , iceReporter(iceReporter)
@@ -1478,9 +1480,8 @@ SubtypingResult Subtyping::isCovariantWith(
 
             if (auto variadic = get<VariadicTypePack>(tail); variadic && variadic->hidden)
             {
-                result.orElse(
-                    isContravariantWith(env, subFunction->argTypes, arena->addTypePack(TypePack{arguments}), scope).withBothComponent(TypePath::PackField::Arguments)
-                );
+                result.orElse(isContravariantWith(env, subFunction->argTypes, arena->addTypePack(TypePack{arguments}), scope)
+                                  .withBothComponent(TypePath::PackField::Arguments));
             }
         }
     }
@@ -1861,7 +1862,7 @@ TypeId Subtyping::makeAggregateType(const Container& container, TypeId orElse)
 
 std::pair<TypeId, ErrorVec> Subtyping::handleTypeFunctionReductionResult(const TypeFunctionInstanceType* functionInstance, NotNull<Scope> scope)
 {
-    TypeFunctionContext context{arena, builtinTypes, scope, normalizer, typeFunctionRuntime, iceReporter, NotNull{&limits}};
+    TypeFunctionContext context{arena, builtinTypes, scope, simplifier, normalizer, typeFunctionRuntime, iceReporter, NotNull{&limits}};
     TypeId function = arena->addType(*functionInstance);
     FunctionGraphReductionResult result = reduceTypeFunctions(function, {}, context, true);
     ErrorVec errors;
