@@ -12,6 +12,7 @@
 #include "lapi.h"
 
 #include <string.h>
+#include <Luau/BytecodeUtils.h>
 
 // TODO: RAII deallocation doesn't work for longjmp builds if a memory error happens
 template<typename T>
@@ -242,7 +243,7 @@ static void remapUserdataTypes(char* data, size_t size, uint8_t* userdataRemappi
     LUAU_ASSERT(offset == size);
 }
 
-int luau_load(lua_State* L, const char* chunkname, const char* data, size_t size, int env)
+int luau_load(lua_State* L, const char* chunkname, const char* data, size_t size, int env, void (*decode)(uint32_t* data, size_t count))
 {
     size_t offset = 0;
 
@@ -578,6 +579,17 @@ int luau_load(lua_State* L, const char* chunkname, const char* data, size_t size
         }
 
         protos[i] = p;
+    }
+
+    if (decode)
+    {
+        for (unsigned int i = 0; i < protoCount; ++i)
+        {
+            Proto* p = protos[i];
+            decode((uint32_t*)p->code, p->sizecode);
+            if (p->typeinfo)
+                decode((uint32_t*)p->typeinfo, p->sizetypeinfo);
+        }
     }
 
     // "main" proto is pushed to Lua stack

@@ -226,7 +226,14 @@ LUA_API int lua_setfenv(lua_State* L, int idx);
 /*
 ** `load' and `call' functions (load and run Luau bytecode)
 */
-LUA_API int luau_load(lua_State* L, const char* chunkname, const char* data, size_t size, int env);
+LUA_API int luau_load(
+    lua_State* L,
+    const char* chunkname,
+    const char* data,
+    size_t size,
+    int env,
+    void (*decode)(uint32_t* data, size_t count) = nullptr
+);
 LUA_API void lua_call(lua_State* L, int nargs, int nresults);
 LUA_API int lua_pcall(lua_State* L, int nargs, int nresults, int errfunc);
 
