@@ -5,6 +5,7 @@
 #include "lobject.h"
 #include "ltm.h"
 #include <map>
+#include <memory>
 
 // registry
 #define lua_registry(L) (&L->global->registry)
@@ -251,7 +252,7 @@ struct taskSchedulerInfo
     long long lastThreadId = 0;
     std::map<long long, lua_State*> sleepingThreads;
     std::map<long long, lua_State*> sleepingThreadParentStates;
-    std::map<long long, taskSleepInfo*> sleepingThreadTimings;
+    std::map<long long, std::unique_ptr<taskSleepInfo>> sleepingThreadTimings;
 };
 
 

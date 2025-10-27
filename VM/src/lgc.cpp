@@ -837,6 +837,12 @@ static int sweepgcopage(lua_State* L, lua_Page* page)
     {
         GCObject* gco = (GCObject*)pos;
 
+        if (L->nogc)
+        {
+            makewhite(g, gco);
+            continue;
+        }
+
         // skip memory blocks that are already freed
         if (gco->gch.tt == LUA_TNIL || (gco->gch.tt == LUA_TTHREAD && gco2th(gco)->nogc))
             continue;
